@@ -252,6 +252,19 @@ struct ContentView: View {
             }
 
         }
+        // Sony 将对焦位置保存在 MakerNote 的加密 Tag9402 中。FocusDistance2 是
+        // ExifTool 基于该位置与 35mm 等效焦距计算出的组合字段，不是标准 EXIF 标签。
+        let lensModel = (exif?["LensModel"] as? String) ?? (props["LensModel"] as? String) ?? ""
+        let hidesFocusDistance = lensModel.lowercased().hasPrefix("viltrox")
+            || lensModel.lowercased().hasPrefix("7artisans")
+        let focalLength35mm = numberValue(exif?["FocalLenIn35mmFilm"])
+            ?? numberValue(exif?["FocalLength"])
+        if !hidesFocusDistance,
+           let focalLength35mm,
+           let focusDistance = sonyFocusDistance2(from: url, focalLength35mm: focalLength35mm) {
+            let value = focusDistance.isInfinite ? "∞" : String(format: "%.2f m", focusDistance)
+            lines.append(InfoItem(label: "对焦距离", value: value))
+        }
         // 纬度
         if let v = gps?["Latitude"] as? Double {
             let ref = gps?["LatitudeRef"] as? String ?? ""
@@ -288,6 +301,61 @@ struct ContentView: View {
 
     private func trimNumber(_ v: Double) -> String {
         v == v.rounded() ? "\(Int(v))" : "\(v)"
+    }
+
+    private func numberValue(_ value: Any?) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? Int { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
+        return nil
+    }
+
+    /// 读取 Sony MakerNote Tag 0x9402 中的 FocusPosition2（偏移 0x2d），并采用
+    /// ExifTool 的 FocusDistance2 换算公式。仅适用于包含该 Sony 标签的 JPEG 文件。
+    private func sonyFocusDistance2(from url: URL, focalLength35mm: Double) -> Double? {
+        guard let imageData = try? Data(contentsOf: url),
+              let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
+            return nil
+        }
+        let tiffStart = exifRange.upperBound
+
+        // 在 Sony MakerNote IFD 中定位 Tag9402：tag=0x9402, type=UNDEFINED。
+        let marker = Data([0x02, 0x94, 0x07, 0x00])
+        var searchStart = tiffStart
+        while let entryRange = imageData.range(of: marker, options: [], in: searchStart..<imageData.endIndex) {
+            let entry = entryRange.lowerBound
+            guard let byteCount = littleEndianUInt32(in: imageData, at: entry + 4),
+                  let relativeOffset = littleEndianUInt32(in: imageData, at: entry + 8),
+                  byteCount >= 46 else { return nil }
+            let dataStart = tiffStart + Int(relativeOffset)
+            let dataEnd = dataStart + Int(byteCount)
+            guard dataStart >= tiffStart, dataEnd <= imageData.count else {
+                searchStart = entry + 1
+                continue
+            }
+
+            let position = Int(sonyDecipherByte(imageData[dataStart + 45])) // Tag9402 的 FocusPosition2
+            guard position > 0 else { return nil }
+            if position >= 255 { return .infinity }
+            return (pow(2.0, Double(position) / 16.0 - 5.0) + 1.0) * focalLength35mm / 1000.0
+        }
+        return nil
+    }
+
+    private func littleEndianUInt32(in data: Data, at offset: Int) -> UInt32? {
+        guard offset >= 0, offset + 4 <= data.count else { return nil }
+        return UInt32(data[offset])
+            | UInt32(data[offset + 1]) << 8
+            | UInt32(data[offset + 2]) << 16
+            | UInt32(data[offset + 3]) << 24
+    }
+
+    /// Sony 0x9402 使用的字节替换密码。这里只需解密 FocusPosition2 所在的一个字节。
+    private func sonyDecipherByte(_ byte: UInt8) -> UInt8 {
+        let table: [UInt8] = [
+            0,1,50,177,10,14,135,40,2,204,202,173,27,220,8,237,100,134,240,79,140,108,184,203,105,196,44,3,151,182,147,124,20,243,226,62,48,142,215,96,28,161,171,55,236,117,190,35,21,106,89,63,208,185,150,181,80,39,136,227,129,148,224,192,4,92,198,232,95,75,112,56,159,130,128,81,43,197,69,73,155,33,82,83,84,133,11,93,97,218,123,85,38,36,7,110,54,91,71,183,217,74,162,223,191,18,37,188,30,127,86,234,16,230,207,103,77,60,145,131,225,49,179,111,244,5,138,70,200,24,118,104,189,172,146,42,19,233,15,163,122,219,61,212,231,58,26,87,175,32,66,178,158,195,139,242,213,211,164,126,31,152,156,238,116,165,166,167,216,94,176,180,52,206,168,121,119,90,193,137,174,154,17,51,157,245,57,25,101,120,22,113,210,169,68,99,64,41,186,160,143,228,214,59,132,13,194,78,88,221,153,34,107,201,187,23,6,229,125,102,67,98,246,205,53,144,46,65,141,109,170,9,115,149,12,241,29,222,76,47,45,247,209,114,235,239,72,199,248,249,250,251,252,253,254,255
+        ]
+        return table[Int(byte)]
     }
 
     private var placeholderView: some View {
