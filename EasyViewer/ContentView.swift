@@ -6,16 +6,612 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
+import AppKit
+import ImageIO
 
 struct ContentView: View {
+    @State private var droppedImage: NSImage?
+    @State private var isTargeted = false
+    @State private var currentURL: URL?
+    @State private var folderImages: [URL] = []
+    @State private var showInfoPanel = false
+    @State private var actualSize = false
+    @FocusState private var isFocused: Bool
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        ZStack {
+            if let image = droppedImage {
+                if actualSize {
+                    // 1:1 像素显示，中键拖拽平移
+                    PanScrollView(
+                        image: image,
+                        width: actualSizeWidth(image),
+                        height: actualSizeHeight(image)
+                    )
+                } else {
+                    FitImageView(image: image)
+                }
+            } else {
+                placeholderView
+            }
+
+            if showInfoPanel, !infoLines.isEmpty {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                    ForEach(infoLines, id: \.self) { item in
+                        GridRow {
+                            Text(item.label)
+                                .font(.system(.callout))
+                                .foregroundStyle(.secondary)
+                            Text(item.value)
+                                .font(.system(.title3, design: .monospaced))
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .shadow(radius: 4)
+                .padding(20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
         }
-        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(isTargeted ? Color.accentColor.opacity(0.1) : Color.clear)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(
+                    isTargeted ? Color.accentColor : Color.secondary.opacity(0.3),
+                    lineWidth: isTargeted ? 3 : 1,
+                    antialiased: true
+                )
+        )
+        .background(
+            FileDropZone(isTargeted: $isTargeted) { url in
+                loadImage(from: url)
+            }
+        )
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .onKeyPress(.leftArrow) {
+            navigate(delta: -1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            navigate(delta: 1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            navigate(delta: -1)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            navigate(delta: 1)
+            return .handled
+        }
+        .onKeyPress(.pageUp) {
+            navigate(delta: -1)
+            return .handled
+        }
+        .onKeyPress(.pageDown) {
+            navigate(delta: 1)
+            return .handled
+        }
+        .onKeyPress("w") {
+            navigate(delta: -1)
+            return .handled
+        }
+        .onKeyPress("s") {
+            navigate(delta: 1)
+            return .handled
+        }
+        .onKeyPress("i") {
+            showInfoPanel.toggle()
+            return .handled
+        }
+        .onKeyPress(.space) {
+            actualSize.toggle()
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            NSApplication.shared.terminate(nil)
+            return .handled
+        }
+        .onAppear {
+            isFocused = true
+        }
+        .onTapGesture {
+            actualSize.toggle()
+        }
+        .onOpenURL { url in
+            loadImage(from: url)
+        }
+        .navigationTitle(windowTitle)
+    }
+
+    private var windowTitle: String {
+        guard let current = currentURL else { return "EasyViewer" }
+        if folderImages.isEmpty {
+            return current.lastPathComponent
+        }
+        let index = (folderImages.firstIndex(of: current).map { $0 + 1 }) ?? 0
+        return "\(current.lastPathComponent) — (\(index) / \(folderImages.count))"
+    }
+
+    // 1:1 像素显示：实际像素 / 屏幕缩放因子（Retina 为 2）
+    private func actualSizeWidth(_ image: NSImage) -> CGFloat {
+        let rep = image.representations.first
+        let pixels = rep?.pixelsWide ?? Int(image.size.width)
+        let scale = NSScreen.main?.backingScaleFactor ?? 1
+        return CGFloat(pixels) / scale
+    }
+
+    private func actualSizeHeight(_ image: NSImage) -> CGFloat {
+        let rep = image.representations.first
+        let pixels = rep?.pixelsHigh ?? Int(image.size.height)
+        let scale = NSScreen.main?.backingScaleFactor ?? 1
+        return CGFloat(pixels) / scale
+    }
+
+    // 浮层显示的信息行：尺寸 + EXIF（按指定顺序，缺字段跳过）
+    private var infoLines: [InfoItem] {
+        var lines: [InfoItem] = []
+        if let image = droppedImage {
+            let rep = image.representations.first
+            let w = rep?.pixelsWide ?? Int(image.size.width)
+            let h = rep?.pixelsHigh ?? Int(image.size.height)
+            lines.append(InfoItem(label: "图片尺寸", value: "\(w) × \(h)"))
+        }
+        lines.append(contentsOf: exifLines)
+        return lines
+    }
+
+    // 读取 EXIF / 顶层 / GPS 属性，按固定顺序输出
+    private var exifLines: [InfoItem] {
+        guard let url = currentURL,
+              let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [String: Any] else { return [] }
+        let exif = props["{Exif}"] as? [String: Any]
+        let tiff = props["{TIFF}"] as? [String: Any]
+        let gps = props["{GPS}"] as? [String: Any]
+        let exifAux = props["{ExifAux}"] as? [String: Any]
+        // print("[EasyViewer] props 所有 key: \(props.keys.sorted())")
+        // print("[EasyViewer] {ExifAux} 所有 key: \(exifAux?.keys.sorted() ?? [])")
+        // print("[EasyViewer] {Exif} 所有 key: \(exif?.keys.sorted() ?? [])")
+        // print("[EasyViewer] {tiff} 所有 key: \(tiff?.keys.sorted() ?? [])")
+
+
+        var lines: [InfoItem] = []
+        // 相机品牌（在 {TIFF} 里）
+        if let v = tiff?["Make"] as? String ?? props["Make"] as? String {
+            lines.append(InfoItem(label: "相机品牌", value: v))
+        }
+        // 相机型号（在 {TIFF} 里）
+        if let v = tiff?["Model"] as? String ?? props["Model"] as? String {
+            lines.append(InfoItem(label: "相机型号", value: v))
+        }
+        // 镜头品牌
+        if let v = props["LensMake"] as? String ?? exif?["LensMake"] as? String {
+            lines.append(InfoItem(label: "镜头品牌", value: v))
+        }
+        // 镜头型号（在 {Exif} 里）
+        if let v = exif?["LensModel"] as? String ?? props["LensModel"] as? String {
+            lines.append(InfoItem(label: "镜头型号", value: v))
+        }
+        // 镜头ID（在 {ExifAux} 里，可能是 Int 或其他类型）
+        if let v = exifAux?["LensID"] {
+            if String(describing: v) != "65535" {
+                lines.append(InfoItem(label: "镜头ID", value: String(describing: v)))
+            }
+        }
+        // 镜头规格
+        if let v = (props["LensSpecification"] as? [Any]) ?? (exif?["LensSpecification"] as? [Any]), !v.isEmpty {
+            lines.append(InfoItem(label: "镜头规格", value: formatLensSpec(v)))
+        }
+        // 创建时间
+        if let v = props["DateTime"] as? String { lines.append(InfoItem(label: "创建时间", value: v)) }
+        // 拍摄时间
+        if let v = exif?["DateTimeOriginal"] as? String { lines.append(InfoItem(label: "拍摄时间", value: v)) }
+        // 曝光时间
+        if let v = exif?["ExposureTime"] as? Double {
+            if v > 0.0 {
+                lines.append(InfoItem(label: "曝光时间", value: formatExposure(v)))
+            }
+        }
+        // 光圈值
+        if let v = exif?["FNumber"] as? Double {
+            if v > 0.0 {
+                lines.append(InfoItem(label: "光圈值", value: "f/\(trimNumber(v))"))
+            }
+
+        }
+        // ISO
+        if let arr = exif?["ISOSpeedRatings"] as? [Any],
+           let iso = arr.first as? Int {
+            if iso > 0 {
+                lines.append(InfoItem(label: "ISO", value: "\(iso)"))
+            }
+        } else if let v = exif?["ISOSpeed"] as? Int {
+            if v > 0 {
+                lines.append(InfoItem(label: "ISO", value: "\(v)"))
+            }
+        }
+        // 闪光灯：bit0=1 表示触发
+        if let v = exif?["Flash"] as? Int {
+            lines.append(InfoItem(label: "闪光灯", value: (v & 0x01) != 0 ? "触发" : "未触发"))
+        }
+        // 白平衡
+        if let v = exif?["WhiteBalance"] as? Int {
+            lines.append(InfoItem(label: "白平衡", value: v == 0 ? "自动" : "手动"))
+        }
+        // 焦距
+        if let v = exif?["FocalLength"] as? Double {
+            if v > 0.0 {
+                lines.append(InfoItem(label: "焦距", value: "\(Int(v)) mm"))
+            }
+
+        }
+        // 纬度
+        if let v = gps?["Latitude"] as? Double {
+            let ref = gps?["LatitudeRef"] as? String ?? ""
+            lines.append(InfoItem(label: "纬度", value: "\(v)\(ref)"))
+        }
+        // 经度
+        if let v = gps?["Longitude"] as? Double {
+            let ref = gps?["LongitudeRef"] as? String ?? ""
+            lines.append(InfoItem(label: "经度", value: "\(v)\(ref)"))
+        }
+        return lines
+    }
+
+    // 镜头规格：[最短焦, 最长焦, 最大光圈(短焦), 最大光圈(长焦)]
+    private func formatLensSpec(_ spec: [Any]) -> String {
+        let nums = spec.compactMap { ($0 as? Double) ?? ($0 as? Int).map(Double.init) }
+        guard nums.count == 4 else {
+            return spec.map { String(describing: $0) }.joined(separator: " / ")
+        }
+        // 定焦镜头（最短=最长）不显示变焦范围
+        let focal = nums[0] == nums[1] ? "\(Int(nums[0]))mm" : "\(Int(nums[0]))-\(Int(nums[1]))mm"
+        let aMin = String(format: "%.1f", nums[2])
+        let aMax = String(format: "%.1f", nums[3])
+        let aperture = nums[2] == nums[3] ? "f/\(aMin)" : "f/\(aMin)-\(aMax)"
+        return "\(focal) \(aperture)"
+    }
+
+    private func formatExposure(_ t: Double) -> String {
+        if t < 1 && t > 0 {
+            return "1/\(Int((1.0 / t).rounded())) s"
+        }
+        return "\(trimNumber(t)) s"
+    }
+
+    private func trimNumber(_ v: Double) -> String {
+        v == v.rounded() ? "\(Int(v))" : "\(v)"
+    }
+
+    private var placeholderView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "photo.badge.plus")
+                .font(.system(size: 56))
+                .foregroundStyle(.secondary)
+            Text("将图片拖到此处")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func loadImage(from url: URL) {
+        guard let data = try? Data(contentsOf: url),
+              let image = NSImage(data: data) else {
+            print("[EasyViewer] 无法加载图片: \(url.path)")
+            return
+        }
+        droppedImage = image
+        currentURL = url
+        loadFolder(for: url)
+        isFocused = true
+    }
+
+    // 枚举同一文件夹下的所有图片，按文件名排序
+    private func loadFolder(for url: URL) {
+        let dir = url.deletingLastPathComponent()
+        do {
+            let urls = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            folderImages = urls.filter { fileURL in
+                guard let type = UTType(filenameExtension: fileURL.pathExtension) else { return false }
+                return type.conforms(to: .image)
+            }.sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+        } catch {
+            print("[EasyViewer] 读取目录失败: \(error.localizedDescription)")
+            folderImages = [url]
+        }
+    }
+
+    // 打印当前图片信息
+    private func logStatus() {
+        guard let current = currentURL else { return }
+        print("[EasyViewer] 拖入图片: \(current.path)")
+        if folderImages.isEmpty {
+            print("[EasyViewer] 当前图片: \(current.lastPathComponent)")
+        } else {
+            let idx = (folderImages.firstIndex(of: current).map { $0 + 1 }) ?? 0
+            print("[EasyViewer] 当前图片: \(current.lastPathComponent) — 文件夹中第 \(idx) / \(folderImages.count) 张")
+        }
+    }
+
+    // 切换到前/后一张图片（循环）
+    private func navigate(delta: Int) {
+        guard let current = currentURL,
+              let idx = folderImages.firstIndex(of: current),
+              !folderImages.isEmpty else { return }
+        let count = folderImages.count
+        let next = ((idx + delta) % count + count) % count
+        let url = folderImages[next]
+        guard let data = try? Data(contentsOf: url),
+              let image = NSImage(data: data) else { return }
+        currentURL = url
+        droppedImage = image
+    }
+}
+
+private struct InfoItem: Hashable {
+    let label: String
+    let value: String
+}
+
+// NSScrollView 容器，支持鼠标中键拖拽平移
+struct PanScrollView: NSViewRepresentable {
+    let image: NSImage
+    let width: CGFloat
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> PanScrollContainer {
+        let scrollView = PanScrollContainer()
+        let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        imageView.image = image
+        imageView.imageScaling = .scaleAxesIndependently
+        imageView.imageAlignment = .alignCenter
+        scrollView.documentView = imageView
+        scrollView.hasHorizontalScroller = true
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = false
+        scrollView.drawsBackground = false
+        scrollView.backgroundColor = .clear
+        scrollView.contentView.backgroundColor = .clear
+        scrollView.usesPredominantAxisScrolling = false
+        scrollView.needsCentering = true
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: PanScrollContainer, context: Context) {
+        guard let imageView = nsView.documentView as? NSImageView else { return }
+        imageView.image = image
+        imageView.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        nsView.needsCentering = true
+    }
+
+    final class PanScrollContainer: NSScrollView {
+        private var lastPanPoint: NSPoint?
+        var needsCentering = false
+
+        override func layout() {
+            super.layout()
+            if needsCentering {
+                centerContent()
+                needsCentering = false
+            }
+        }
+
+        private func centerContent() {
+            guard let docFrame = documentView?.frame else { return }
+            let clipBounds = contentView.bounds
+            let maxX = max(0, docFrame.width - clipBounds.width)
+            let maxY = max(0, docFrame.height - clipBounds.height)
+            contentView.scroll(to: NSPoint(x: maxX / 2, y: maxY / 2))
+        }
+
+        override func otherMouseDown(with event: NSEvent) {
+            if event.buttonNumber == 2 {
+                lastPanPoint = event.locationInWindow
+                NSCursor.closedHand.push()
+            } else {
+                super.otherMouseDown(with: event)
+            }
+        }
+
+        override func otherMouseDragged(with event: NSEvent) {
+            guard event.buttonNumber == 2, let last = lastPanPoint else {
+                super.otherMouseDragged(with: event)
+                return
+            }
+            let current = event.locationInWindow
+            let dx = current.x - last.x
+            let dy = current.y - last.y
+            let clip = contentView
+            var origin = clip.bounds.origin
+            origin.x -= dx
+            origin.y -= dy
+            // 限制在文档范围内
+            if let docFrame = documentView?.frame {
+                let maxX = max(0, docFrame.width - clip.bounds.width)
+                let maxY = max(0, docFrame.height - clip.bounds.height)
+                origin.x = min(max(0, origin.x), maxX)
+                origin.y = min(max(0, origin.y), maxY)
+            }
+            clip.scroll(to: origin)
+            lastPanPoint = current
+        }
+
+        override func otherMouseUp(with event: NSEvent) {
+            if event.buttonNumber == 2 {
+                lastPanPoint = nil
+                NSCursor.pop()
+            } else {
+                super.otherMouseUp(with: event)
+            }
+        }
+
+        // 右键单击显示坐标
+        override func rightMouseDown(with event: NSEvent) {
+            guard let imageView = documentView as? NSImageView, let image = imageView.image else { return }
+            let pointInWindow = event.locationInWindow
+            let pointInClip = contentView.convert(pointInWindow, from: nil)
+            let pointInDoc = imageView.convert(pointInClip, from: contentView)
+            
+            // 窗口坐标 (0-1)
+            let winFrame = window?.frame ?? bounds
+            let winX = min(max(pointInWindow.x / winFrame.width, 0), 1)
+            let winY = min(max((winFrame.height - pointInWindow.y) / winFrame.height, 0), 1)
+            
+            // 图像像素坐标
+            let rep = image.representations.first
+            let pixelsW = rep?.pixelsWide ?? Int(image.size.width)
+            let pixelsH = rep?.pixelsHigh ?? Int(image.size.height)
+            let pixelX = Int(pointInDoc.x.rounded())
+            let pixelY = Int(pointInDoc.y.rounded())
+            let clampedX = min(max(pixelX, 0), pixelsW - 1)
+            let clampedY = min(max(pixelY, 0), pixelsH - 1)
+            
+            print("[EasyViewer] 窗口坐标: (x: \(String(format: "%.4f", winX)), y: \(String(format: "%.4f", winY)))")
+            print("[EasyViewer] 图像坐标: (x: \(clampedX), y: \(clampedY)) / (\(pixelsW) × \(pixelsH))")
+        }
+    }
+}
+
+// Fit 模式图片视图，支持右键显示坐标
+struct FitImageView: NSViewRepresentable {
+    let image: NSImage
+
+    func makeNSView(context: Context) -> FitImageViewContainer {
+        let view = FitImageViewContainer()
+        let imageView = NSImageView()
+        imageView.image = image
+        imageView.imageScaling = .scaleProportionallyDown
+        imageView.imageAlignment = .alignCenter
+        imageView.autoresizingMask = [.width, .height]
+        view.addSubview(imageView)
+        view.imageView = imageView
+        return view
+    }
+
+    func updateNSView(_ nsView: FitImageViewContainer, context: Context) {
+        nsView.imageView?.image = image
+    }
+
+    final class FitImageViewContainer: NSView {
+        var imageView: NSImageView?
+
+        // 右键单击显示坐标
+        override func rightMouseDown(with event: NSEvent) {
+            guard let imageView = imageView, let image = imageView.image else { return }
+            let pointInWindow = event.locationInWindow
+            let pointInView = convert(pointInWindow, from: nil)
+            
+            // 窗口坐标 (0-1)
+            let winFrame = window?.frame ?? bounds
+            let winX = min(max(pointInWindow.x / winFrame.width, 0), 1)
+            let winY = min(max((winFrame.height - pointInWindow.y) / winFrame.height, 0), 1)
+            
+            // 获取图像像素尺寸
+            let rep = image.representations.first
+            let pixelsW = rep?.pixelsWide ?? Int(image.size.width)
+            let pixelsH = rep?.pixelsHigh ?? Int(image.size.height)
+            
+            // 获取图像在 view 中的实际绘制区域
+            let imageSize = image.size
+            let viewSize = bounds.size
+            
+            // 计算缩放比例
+            let scaleX = viewSize.width / imageSize.width
+            let scaleY = viewSize.height / imageSize.height
+            let scale = min(scaleX, scaleY)
+            
+            // 计算图像在 view 中的偏移（居中）
+            let offsetX = (viewSize.width - imageSize.width * scale) / 2
+            let offsetY = (viewSize.height - imageSize.height * scale) / 2
+            
+            // 将点击点转换为图像像素坐标
+            let pixelX = Int(((pointInView.x - offsetX) / scale).rounded())
+            let pixelY = Int(((pointInView.y - offsetY) / scale).rounded())
+            let clampedX = min(max(pixelX, 0), pixelsW - 1)
+            let clampedY = min(max(pixelY, 0), pixelsH - 1)
+            
+            print("[EasyViewer] 窗口坐标: (x: \(String(format: "%.4f", winX)), y: \(String(format: "%.4f", winY)))")
+            print("[EasyViewer] 图像坐标: (x: \(clampedX), y: \(clampedY)) / (\(pixelsW) × \(pixelsH))")
+        }
+    }
+}
+
+// 使用 AppKit NSView 注册 .fileURL 拖拽类型，可靠获取 Finder 拖入的文件 URL
+struct FileDropZone: NSViewRepresentable {
+    @Binding var isTargeted: Bool
+    var onDrop: (URL) -> Void
+
+    final class Coordinator {
+        var onEnter: () -> Void = {}
+        var onExit: () -> Void = {}
+        var onDrop: (URL) -> Void = { _ in }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> DropView {
+        let v = DropView()
+        v.coordinator = context.coordinator
+        return v
+    }
+
+    func updateNSView(_ nsView: DropView, context: Context) {
+        let c = context.coordinator
+        c.onEnter = { isTargeted = true }
+        c.onExit = { isTargeted = false }
+        c.onDrop = { url in onDrop(url) }
+    }
+
+    final class DropView: NSView {
+        var coordinator: Coordinator?
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            registerForDraggedTypes([.fileURL])
+        }
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            registerForDraggedTypes([.fileURL])
+        }
+
+        private func firstImageURL(from board: NSPasteboard) -> URL? {
+            let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+            guard let urls = board.readObjects(forClasses: [NSURL.self], options: options) as? [URL] else { return nil }
+            return urls.first { url in
+                guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+                return type.conforms(to: .image)
+            }
+        }
+
+        override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+            guard firstImageURL(from: sender.draggingPasteboard) != nil else { return [] }
+            coordinator?.onEnter()
+            return .copy
+        }
+
+        override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+            return .copy
+        }
+
+        override func draggingExited(_ sender: NSDraggingInfo?) {
+            coordinator?.onExit()
+        }
+
+        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+            defer { coordinator?.onExit() }
+            guard let url = firstImageURL(from: sender.draggingPasteboard) else { return false }
+            coordinator?.onDrop(url)
+            return true
+        }
     }
 }
 
