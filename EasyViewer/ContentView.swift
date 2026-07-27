@@ -852,34 +852,10 @@ struct PanScrollView: NSViewRepresentable {
             }
         }
 
-        // 右键单击显示坐标
-        override func rightMouseDown(with event: NSEvent) {
-            guard let imageView = documentView as? NSImageView, let image = imageView.image else { return }
-            let pointInWindow = event.locationInWindow
-            let pointInClip = contentView.convert(pointInWindow, from: nil)
-            let pointInDoc = imageView.convert(pointInClip, from: contentView)
-            
-            // 窗口坐标 (0-1)
-            let winFrame = window?.frame ?? bounds
-            let winX = min(max(pointInWindow.x / winFrame.width, 0), 1)
-            let winY = min(max((winFrame.height - pointInWindow.y) / winFrame.height, 0), 1)
-            
-            // 图像像素坐标
-            let rep = image.representations.first
-            let pixelsW = rep?.pixelsWide ?? Int(image.size.width)
-            let pixelsH = rep?.pixelsHigh ?? Int(image.size.height)
-            let pixelX = Int(pointInDoc.x.rounded())
-            let pixelY = Int(pointInDoc.y.rounded())
-            let clampedX = min(max(pixelX, 0), pixelsW - 1)
-            let clampedY = min(max(pixelY, 0), pixelsH - 1)
-            
-            print("[EasyViewer] 窗口坐标: (x: \(String(format: "%.4f", winX)), y: \(String(format: "%.4f", winY)))")
-            print("[EasyViewer] 图像坐标: (x: \(clampedX), y: \(clampedY)) / (\(pixelsW) × \(pixelsH))")
-        }
     }
 }
 
-// Fit 模式图片视图，支持右键显示坐标
+// Fit 模式图片视图
 struct FitImageView: NSViewRepresentable {
     let image: NSImage
     let focusPoints: [CGPoint]
@@ -1034,44 +1010,6 @@ struct FitImageView: NSViewRepresentable {
             }
         }
 
-        // 右键单击显示坐标
-        override func rightMouseDown(with event: NSEvent) {
-            guard let imageView = imageView, let image = imageView.image else { return }
-            let pointInWindow = event.locationInWindow
-            let pointInView = convert(pointInWindow, from: nil)
-            
-            // 窗口坐标 (0-1)
-            let winFrame = window?.frame ?? bounds
-            let winX = min(max(pointInWindow.x / winFrame.width, 0), 1)
-            let winY = min(max((winFrame.height - pointInWindow.y) / winFrame.height, 0), 1)
-            
-            // 获取图像像素尺寸
-            let rep = image.representations.first
-            let pixelsW = rep?.pixelsWide ?? Int(image.size.width)
-            let pixelsH = rep?.pixelsHigh ?? Int(image.size.height)
-            
-            // 获取图像在 view 中的实际绘制区域
-            let imageSize = image.size
-            let viewSize = bounds.size
-            
-            // 计算缩放比例
-            let scaleX = viewSize.width / imageSize.width
-            let scaleY = viewSize.height / imageSize.height
-            let scale = min(scaleX, scaleY)
-            
-            // 计算图像在 view 中的偏移（居中）
-            let offsetX = (viewSize.width - imageSize.width * scale) / 2
-            let offsetY = (viewSize.height - imageSize.height * scale) / 2
-            
-            // 将点击点转换为图像像素坐标
-            let pixelX = Int(((pointInView.x - offsetX) / scale).rounded())
-            let pixelY = Int(((pointInView.y - offsetY) / scale).rounded())
-            let clampedX = min(max(pixelX, 0), pixelsW - 1)
-            let clampedY = min(max(pixelY, 0), pixelsH - 1)
-            
-            print("[EasyViewer] 窗口坐标: (x: \(String(format: "%.4f", winX)), y: \(String(format: "%.4f", winY)))")
-            print("[EasyViewer] 图像坐标: (x: \(clampedX), y: \(clampedY)) / (\(pixelsW) × \(pixelsH))")
-        }
     }
 }
 
