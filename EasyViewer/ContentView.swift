@@ -588,7 +588,7 @@ struct ContentView: View {
         let dir = url.deletingLastPathComponent()
         do {
         let urls = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        let supportedExtensions: Set<String> = ["jpg", "jpeg", "png", "webp"]
+        let supportedExtensions: Set<String> = ["jpg", "jpeg", "png", "webp", "heic", "heif", "hif"]
         folderImages = urls.filter { fileURL in
             supportedExtensions.contains(fileURL.pathExtension.lowercased())
         }.sorted {
