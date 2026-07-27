@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var folderImages: [URL] = []
     @State private var showInfoPanel = false
     @State private var actualSize = false
+    @State private var zoomAnchor: ZoomAnchor?
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -27,10 +28,18 @@ struct ContentView: View {
                     PanScrollView(
                         image: image,
                         width: actualSizeWidth(image),
-                        height: actualSizeHeight(image)
+                        height: actualSizeHeight(image),
+                        anchor: zoomAnchor,
+                        onZoomOut: {
+                            zoomAnchor = nil
+                            actualSize = false
+                        }
                     )
                 } else {
-                    FitImageView(image: image)
+                    FitImageView(image: image) { anchor in
+                        zoomAnchor = anchor
+                        actualSize = true
+                    }
                 }
             } else {
                 placeholderView
@@ -111,6 +120,7 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress(.space) {
+            zoomAnchor = nil
             actualSize.toggle()
             return .handled
         }
@@ -120,9 +130,6 @@ struct ContentView: View {
         }
         .onAppear {
             isFocused = true
-        }
-        .onTapGesture {
-            actualSize.toggle()
         }
         .onOpenURL { url in
             loadImage(from: url)
@@ -488,18 +495,28 @@ private struct InfoItem: Hashable {
     let value: String
 }
 
+struct ZoomAnchor: Equatable {
+    /// 点击像素在图片内的归一化坐标。
+    let imageFraction: CGPoint
+    /// 点击点在图片容器内的归一化坐标，用于保持它在窗口中的显示位置。
+    let viewFraction: CGPoint
+}
+
 // NSScrollView 容器，支持鼠标中键拖拽平移
 struct PanScrollView: NSViewRepresentable {
     let image: NSImage
     let width: CGFloat
     let height: CGFloat
+    let anchor: ZoomAnchor?
+    let onZoomOut: () -> Void
 
     func makeNSView(context: Context) -> PanScrollContainer {
         let scrollView = PanScrollContainer()
-        let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        let imageView = ZoomableImageView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         imageView.image = image
         imageView.imageScaling = .scaleAxesIndependently
         imageView.imageAlignment = .alignCenter
+        imageView.onZoomOut = onZoomOut
         scrollView.documentView = imageView
         scrollView.hasHorizontalScroller = true
         scrollView.hasVerticalScroller = true
@@ -508,7 +525,7 @@ struct PanScrollView: NSViewRepresentable {
         scrollView.backgroundColor = .clear
         scrollView.contentView.backgroundColor = .clear
         scrollView.usesPredominantAxisScrolling = false
-        scrollView.needsCentering = true
+        scrollView.configure(anchor: anchor)
         return scrollView
     }
 
@@ -516,18 +533,46 @@ struct PanScrollView: NSViewRepresentable {
         guard let imageView = nsView.documentView as? NSImageView else { return }
         imageView.image = image
         imageView.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        nsView.needsCentering = true
+        (imageView as? ZoomableImageView)?.onZoomOut = onZoomOut
+        nsView.configure(anchor: anchor)
+    }
+
+    final class ZoomableImageView: NSImageView {
+        var onZoomOut: () -> Void = {}
+
+        override func mouseUp(with event: NSEvent) {
+            if event.buttonNumber == 0 {
+                onZoomOut()
+            } else {
+                super.mouseUp(with: event)
+            }
+        }
     }
 
     final class PanScrollContainer: NSScrollView {
         private var lastPanPoint: NSPoint?
         var needsCentering = false
+        private var pendingAnchor: ZoomAnchor?
+        private var appliedAnchor: ZoomAnchor?
+        private var hasConfiguredAnchor = false
+
+        func configure(anchor: ZoomAnchor?) {
+            guard !hasConfiguredAnchor || anchor != appliedAnchor else { return }
+            pendingAnchor = anchor
+            appliedAnchor = anchor
+            hasConfiguredAnchor = true
+            needsCentering = anchor == nil
+            needsLayout = true
+        }
 
         override func layout() {
             super.layout()
             if needsCentering {
                 centerContent()
                 needsCentering = false
+            } else if let anchor = pendingAnchor {
+                positionContent(at: anchor)
+                pendingAnchor = nil
             }
         }
 
@@ -537,6 +582,26 @@ struct PanScrollView: NSViewRepresentable {
             let maxX = max(0, docFrame.width - clipBounds.width)
             let maxY = max(0, docFrame.height - clipBounds.height)
             contentView.scroll(to: NSPoint(x: maxX / 2, y: maxY / 2))
+        }
+
+        private func positionContent(at anchor: ZoomAnchor) {
+            guard let docFrame = documentView?.frame else { return }
+            let clipBounds = contentView.bounds
+            let pointInDocument = NSPoint(
+                x: docFrame.width * anchor.imageFraction.x,
+                y: docFrame.height * anchor.imageFraction.y
+            )
+            let pointInClip = NSPoint(
+                x: clipBounds.width * anchor.viewFraction.x,
+                y: clipBounds.height * anchor.viewFraction.y
+            )
+            let maxX = max(0, docFrame.width - clipBounds.width)
+            let maxY = max(0, docFrame.height - clipBounds.height)
+            let origin = NSPoint(
+                x: min(max(0, pointInDocument.x - pointInClip.x), maxX),
+                y: min(max(0, pointInDocument.y - pointInClip.y), maxY)
+            )
+            contentView.scroll(to: origin)
         }
 
         override func otherMouseDown(with event: NSEvent) {
@@ -610,6 +675,7 @@ struct PanScrollView: NSViewRepresentable {
 // Fit 模式图片视图，支持右键显示坐标
 struct FitImageView: NSViewRepresentable {
     let image: NSImage
+    let onZoomIn: (ZoomAnchor) -> Void
 
     func makeNSView(context: Context) -> FitImageViewContainer {
         let view = FitImageViewContainer()
@@ -620,15 +686,52 @@ struct FitImageView: NSViewRepresentable {
         imageView.autoresizingMask = [.width, .height]
         view.addSubview(imageView)
         view.imageView = imageView
+        view.onZoomIn = onZoomIn
         return view
     }
 
     func updateNSView(_ nsView: FitImageViewContainer, context: Context) {
         nsView.imageView?.image = image
+        nsView.onZoomIn = onZoomIn
     }
 
     final class FitImageViewContainer: NSView {
         var imageView: NSImageView?
+        var onZoomIn: (ZoomAnchor) -> Void = { _ in }
+
+        override func mouseUp(with event: NSEvent) {
+            guard event.buttonNumber == 0,
+                  let imageView,
+                  let image = imageView.image else {
+                super.mouseUp(with: event)
+                return
+            }
+            let point = convert(event.locationInWindow, from: nil)
+            let imageRect = displayedImageRect(for: image)
+            guard imageRect.contains(point) else {
+                super.mouseUp(with: event)
+                return
+            }
+            let imageFraction = CGPoint(
+                x: (point.x - imageRect.minX) / imageRect.width,
+                y: (point.y - imageRect.minY) / imageRect.height
+            )
+            let viewFraction = CGPoint(x: point.x / bounds.width, y: point.y / bounds.height)
+            onZoomIn(ZoomAnchor(imageFraction: imageFraction, viewFraction: viewFraction))
+        }
+
+        private func displayedImageRect(for image: NSImage) -> NSRect {
+            let imageSize = image.size
+            guard imageSize.width > 0, imageSize.height > 0 else { return .zero }
+            let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+            let size = NSSize(width: imageSize.width * scale, height: imageSize.height * scale)
+            return NSRect(
+                x: (bounds.width - size.width) / 2,
+                y: (bounds.height - size.height) / 2,
+                width: size.width,
+                height: size.height
+            )
+        }
 
         // 右键单击显示坐标
         override func rightMouseDown(with event: NSEvent) {
