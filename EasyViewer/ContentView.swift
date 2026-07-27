@@ -49,23 +49,7 @@ struct ContentView: View {
             }
 
             if showInfoPanel, !infoLines.isEmpty {
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
-                    ForEach(infoLines, id: \.self) { item in
-                        GridRow {
-                            Text(item.label)
-                                .font(.system(.callout))
-                                .foregroundStyle(.secondary)
-                            Text(item.value)
-                                .font(.system(.title3, design: .monospaced))
-                        }
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                .shadow(radius: 4)
-                .padding(20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                infoPanel
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -81,6 +65,11 @@ struct ContentView: View {
         .background(
             FileDropZone(isTargeted: $isTargeted) { url in
                 loadImage(from: url)
+            }
+        )
+        .background(
+            CommandDeleteHandler {
+                moveCurrentImageToTrash()
             }
         )
         .focusable()
@@ -150,6 +139,26 @@ struct ContentView: View {
         }
         let index = (folderImages.firstIndex(of: current).map { $0 + 1 }) ?? 0
         return "\(current.lastPathComponent) — (\(index) / \(folderImages.count))"
+    }
+
+    private var infoPanel: some View {
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+            ForEach(infoLines, id: \.self) { item in
+                GridRow {
+                    Text(item.label)
+                        .font(.system(.callout))
+                        .foregroundStyle(.secondary)
+                    Text(item.value)
+                        .font(.system(.title3, design: .monospaced))
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .shadow(radius: 4)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // 1:1 像素显示：实际像素 / 屏幕缩放因子（Retina 为 2）
@@ -616,6 +625,40 @@ struct ContentView: View {
         showFocusPoints = false
         focusPoints = []
     }
+
+    @discardableResult
+    private func moveCurrentImageToTrash() -> Bool {
+        guard let current = currentURL,
+              let index = folderImages.firstIndex(of: current) else { return false }
+        do {
+            try FileManager.default.trashItem(at: current, resultingItemURL: nil)
+        } catch {
+            print("[EasyViewer] 无法移到废纸篓: \(error.localizedDescription)")
+            return true
+        }
+
+        folderImages.remove(at: index)
+        showFocusPoints = false
+        focusPoints = []
+        guard !folderImages.isEmpty else {
+            currentURL = nil
+            droppedImage = nil
+            return true
+        }
+
+        // 删除后优先显示原位置的下一张；删除最后一张时显示前一张。
+        let nextIndex = min(index, folderImages.count - 1)
+        let nextURL = folderImages[nextIndex]
+        guard let data = try? Data(contentsOf: nextURL),
+              let image = NSImage(data: data) else {
+            currentURL = nextURL
+            droppedImage = nil
+            return true
+        }
+        currentURL = nextURL
+        droppedImage = image
+        return true
+    }
 }
 
 private struct InfoItem: Hashable {
@@ -1038,6 +1081,40 @@ struct FileDropZone: NSViewRepresentable {
             coordinator?.onDrop(url)
             return true
         }
+    }
+}
+
+/// 直接监听 AppKit 键盘事件，避免 ⌘⌫ 被系统菜单快捷键抢占。
+struct CommandDeleteHandler: NSViewRepresentable {
+    var onCommandDelete: () -> Bool
+
+    final class Coordinator {
+        var handler: () -> Bool = { false }
+        var monitor: Any?
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let coordinator = context.coordinator
+        coordinator.handler = onCommandDelete
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak coordinator] event in
+            guard event.keyCode == 51, // Backspace
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+                  coordinator?.handler() == true else {
+                return event
+            }
+            return nil
+        }
+        return NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.handler = onCommandDelete
     }
 }
 
