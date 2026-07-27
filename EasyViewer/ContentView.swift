@@ -337,12 +337,15 @@ struct ContentView: View {
     }
 
     private func toggleFocusPoints() {
-        guard !showFocusPoints else {
-            showFocusPoints = false
-            return
-        }
-        focusPoints = currentURL.flatMap(sonyFocusPoints(from:)) ?? []
-        showFocusPoints = !focusPoints.isEmpty
+        showFocusPoints.toggle()
+        refreshFocusPoints()
+    }
+
+    /// 对焦框开关属于当前窗口；图片切换时仅更新该图的点位数据。
+    private func refreshFocusPoints() {
+        focusPoints = showFocusPoints
+            ? (currentURL.flatMap(sonyFocusPoints(from:)) ?? [])
+            : []
     }
 
     private func toggleActualSize() {
@@ -575,8 +578,7 @@ struct ContentView: View {
         }
         droppedImage = image
         currentURL = url
-        showFocusPoints = false
-        focusPoints = []
+        refreshFocusPoints()
         loadFolder(for: url)
         isFocused = true
     }
@@ -622,8 +624,7 @@ struct ContentView: View {
               let image = NSImage(data: data) else { return }
         currentURL = url
         droppedImage = image
-        showFocusPoints = false
-        focusPoints = []
+        refreshFocusPoints()
     }
 
     @discardableResult
@@ -646,11 +647,10 @@ struct ContentView: View {
         }
 
         folderImages.remove(at: index)
-        showFocusPoints = false
-        focusPoints = []
         guard !folderImages.isEmpty else {
             currentURL = nil
             droppedImage = nil
+            focusPoints = []
             return true
         }
 
@@ -665,6 +665,7 @@ struct ContentView: View {
         }
         currentURL = nextURL
         droppedImage = image
+        refreshFocusPoints()
         return true
     }
 
@@ -884,6 +885,8 @@ struct FitImageView: NSViewRepresentable {
     final class VImageImageView: NSImageView {
         private var cachedSource: NSImage?
         private var cachedPixelSize: NSSize = .zero
+        private var isLiveResizing = false
+        private var needsPreviewRebuild = false
 
         var sourceImage: NSImage? {
             didSet {
@@ -891,12 +894,34 @@ struct FitImageView: NSViewRepresentable {
                     cachedSource = nil
                     cachedPixelSize = .zero
                 }
-                rebuildPreviewIfNeeded()
+                schedulePreviewRebuild()
             }
         }
 
         override func layout() {
             super.layout()
+            schedulePreviewRebuild()
+        }
+
+        override func viewWillStartLiveResize() {
+            super.viewWillStartLiveResize()
+            isLiveResizing = true
+        }
+
+        override func viewDidEndLiveResize() {
+            super.viewDidEndLiveResize()
+            isLiveResizing = false
+            if needsPreviewRebuild {
+                needsPreviewRebuild = false
+                rebuildPreviewIfNeeded()
+            }
+        }
+
+        private func schedulePreviewRebuild() {
+            guard !isLiveResizing else {
+                needsPreviewRebuild = true
+                return
+            }
             rebuildPreviewIfNeeded()
         }
 
