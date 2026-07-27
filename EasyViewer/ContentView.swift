@@ -55,7 +55,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(isTargeted ? Color.accentColor.opacity(0.1) : Color.clear)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            Rectangle()
                 .strokeBorder(
                     isTargeted ? Color.accentColor : Color.secondary.opacity(0.3),
                     lineWidth: isTargeted ? 3 : 1,
