@@ -585,11 +585,11 @@ struct ContentView: View {
     private func loadFolder(for url: URL) {
         let dir = url.deletingLastPathComponent()
         do {
-            let urls = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-            folderImages = urls.filter { fileURL in
-                guard let type = UTType(filenameExtension: fileURL.pathExtension) else { return false }
-                return type.conforms(to: .image)
-            }.sorted {
+        let urls = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        let supportedExtensions: Set<String> = ["jpg", "jpeg", "png", "webp"]
+        folderImages = urls.filter { fileURL in
+            supportedExtensions.contains(fileURL.pathExtension.lowercased())
+        }.sorted {
                 $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
             }
         } catch {
@@ -630,11 +630,19 @@ struct ContentView: View {
     private func moveCurrentImageToTrash() -> Bool {
         guard let current = currentURL,
               let index = folderImages.firstIndex(of: current) else { return false }
+        let companionRAWs = matchingRawFiles(for: current)
         do {
             try FileManager.default.trashItem(at: current, resultingItemURL: nil)
         } catch {
             print("[EasyViewer] 无法移到废纸篓: \(error.localizedDescription)")
             return true
+        }
+        for rawURL in companionRAWs {
+            do {
+                try FileManager.default.trashItem(at: rawURL, resultingItemURL: nil)
+            } catch {
+                print("[EasyViewer] 无法将配对 RAW 移到废纸篓 (\(rawURL.lastPathComponent)): \(error.localizedDescription)")
+            }
         }
 
         folderImages.remove(at: index)
@@ -658,6 +666,21 @@ struct ContentView: View {
         currentURL = nextURL
         droppedImage = image
         return true
+    }
+
+    private func matchingRawFiles(for imageURL: URL) -> [URL] {
+        let rawExtensions: Set<String> = ["ARW", "NEF", "CR2", "CR3", "RAF", "RW2"]
+        let baseName = imageURL.deletingPathExtension().lastPathComponent
+        let directory = imageURL.deletingLastPathComponent()
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return urls.filter { url in
+            rawExtensions.contains(url.pathExtension.uppercased())
+                && url.deletingPathExtension().lastPathComponent == baseName
+        }
     }
 }
 
