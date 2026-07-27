@@ -363,6 +363,7 @@ struct ContentView: View {
               let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
             return nil
         }
+        let orientation = imageOrientation(from: url)
         let tiffStart = exifRange.upperBound
         let marker = Data([0x2a, 0x20, 0x07, 0x00]) // Sony Tag202a, UNDEFINED
         var searchStart = tiffStart
@@ -390,10 +391,35 @@ struct ContentView: View {
                       x != UInt16.max, y != UInt16.max else { return nil }
                 return CGPoint(x: CGFloat(x) / CGFloat(areaWidth), y: CGFloat(y) / CGFloat(areaHeight))
             }
-            if !points.isEmpty { return points }
+            if !points.isEmpty { return orientFocusPoints(points, orientation: orientation) }
             break // 跟踪/眼部 AF 不会写入静态点列表，改用 FocusLocation。
         }
         return sonyFocusLocation(in: imageData, tiffStart: tiffStart)
+            .map { orientFocusPoints($0, orientation: orientation) }
+    }
+
+    private func imageOrientation(from url: URL) -> Int {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else {
+            return 1
+        }
+        return Int(numberValue(properties["Orientation"]) ?? 1)
+    }
+
+    /// Sony 的 AF 坐标基于原始像素方向，需转换到 AppKit 实际显示的 EXIF 方向。
+    private func orientFocusPoints(_ points: [CGPoint], orientation: Int) -> [CGPoint] {
+        points.map { point in
+            switch orientation {
+            case 2: return CGPoint(x: 1 - point.x, y: point.y)
+            case 3: return CGPoint(x: 1 - point.x, y: 1 - point.y)
+            case 4: return CGPoint(x: point.x, y: 1 - point.y)
+            case 5: return CGPoint(x: point.y, y: point.x)
+            case 6: return CGPoint(x: 1 - point.y, y: point.x)
+            case 7: return CGPoint(x: 1 - point.y, y: 1 - point.x)
+            case 8: return CGPoint(x: point.y, y: 1 - point.x)
+            default: return point
+            }
+        }
     }
 
     /// AF Tracking / Eye AF 的回退位置：宽、高、对焦点 X、对焦点 Y。
