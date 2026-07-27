@@ -9,6 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 import ImageIO
+import Accelerate
 
 struct ContentView: View {
     @State private var droppedImage: NSImage?
@@ -886,9 +887,8 @@ struct FitImageView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> FitImageViewContainer {
         let view = FitImageViewContainer()
-        let imageView = NSImageView()
-        imageView.image = image
-        imageView.imageScaling = .scaleProportionallyDown
+        let imageView = VImageImageView()
+        imageView.sourceImage = image
         imageView.imageAlignment = .alignCenter
         imageView.autoresizingMask = [.width, .height]
         view.addSubview(imageView)
@@ -899,9 +899,85 @@ struct FitImageView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: FitImageViewContainer, context: Context) {
-        nsView.imageView?.image = image
+        (nsView.imageView as? VImageImageView)?.sourceImage = image
         nsView.onZoomIn = onZoomIn
         nsView.focusPoints = focusPoints
+    }
+
+    /// 同步使用 Accelerate/vImage 高质量缩放，避免 Core Image 的 GPU 回读开销。
+    final class VImageImageView: NSImageView {
+        private var cachedSource: NSImage?
+        private var cachedPixelSize: NSSize = .zero
+
+        var sourceImage: NSImage? {
+            didSet {
+                if sourceImage !== oldValue {
+                    cachedSource = nil
+                    cachedPixelSize = .zero
+                }
+                rebuildPreviewIfNeeded()
+            }
+        }
+
+        override func layout() {
+            super.layout()
+            rebuildPreviewIfNeeded()
+        }
+
+        private func rebuildPreviewIfNeeded() {
+            guard let sourceImage,
+                  let cgImage = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil),
+                  bounds.width > 0, bounds.height > 0,
+                  sourceImage.size.width > 0, sourceImage.size.height > 0 else { return }
+            let fitScale = min(bounds.width / sourceImage.size.width, bounds.height / sourceImage.size.height, 1)
+            let displaySize = NSSize(width: sourceImage.size.width * fitScale, height: sourceImage.size.height * fitScale)
+            let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+            let targetPixelSize = NSSize(width: ceil(displaySize.width * backingScale), height: ceil(displaySize.height * backingScale))
+            guard targetPixelSize != cachedPixelSize || sourceImage !== cachedSource else { return }
+            cachedSource = sourceImage
+            cachedPixelSize = targetPixelSize
+
+            guard targetPixelSize.width < CGFloat(cgImage.width),
+                  targetPixelSize.height < CGFloat(cgImage.height),
+                  let preview = vImagePreview(from: cgImage, targetPixelSize: targetPixelSize) else {
+                image = sourceImage
+                imageScaling = .scaleProportionallyDown
+                return
+            }
+            image = NSImage(cgImage: preview, size: displaySize)
+            imageScaling = .scaleNone
+        }
+
+        private func vImagePreview(from cgImage: CGImage, targetPixelSize: NSSize) -> CGImage? {
+            guard cgImage.bitsPerComponent == 8,
+                  cgImage.bitsPerPixel == 32,
+                  let sourceData = cgImage.dataProvider?.data,
+                  let sourceBytes = CFDataGetBytePtr(sourceData) else { return nil }
+            var source = vImage_Buffer(
+                data: UnsafeMutableRawPointer(mutating: sourceBytes),
+                height: vImagePixelCount(cgImage.height),
+                width: vImagePixelCount(cgImage.width),
+                rowBytes: cgImage.bytesPerRow
+            )
+            var destination = vImage_Buffer()
+            let targetWidth = vImagePixelCount(targetPixelSize.width)
+            let targetHeight = vImagePixelCount(targetPixelSize.height)
+            guard vImageBuffer_Init(&destination, targetHeight, targetWidth, 32, vImage_Flags(kvImageNoFlags)) == kvImageNoError else {
+                return nil
+            }
+            defer { free(destination.data) }
+            guard vImageScale_ARGB8888(&source, &destination, nil, vImage_Flags(kvImageHighQualityResampling)) == kvImageNoError,
+                  let destinationData = destination.data else { return nil }
+            let data = Data(bytes: destinationData, count: destination.rowBytes * Int(targetHeight))
+            guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+            return CGImage(
+                width: Int(targetWidth), height: Int(targetHeight),
+                bitsPerComponent: cgImage.bitsPerComponent, bitsPerPixel: cgImage.bitsPerPixel,
+                bytesPerRow: destination.rowBytes,
+                space: cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB(), bitmapInfo: cgImage.bitmapInfo,
+                provider: provider, decode: nil, shouldInterpolate: true, intent: cgImage.renderingIntent
+            )
+        }
     }
 
     final class FitImageViewContainer: NSView {
