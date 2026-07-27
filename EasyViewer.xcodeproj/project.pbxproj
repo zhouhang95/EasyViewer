@@ -10,9 +10,22 @@
 		C832F8EF3007F77E005C8F9F /* EasyViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EasyViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		C88750033015D4A200603007 /* Exceptions for "EasyViewer" folder in "EasyViewer" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = C832F8EE3007F77E005C8F9F /* EasyViewer */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		C832F8F13007F77E005C8F9F /* EasyViewer */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				C88750033015D4A200603007 /* Exceptions for "EasyViewer" folder in "EasyViewer" target */,
+			);
 			path = EasyViewer;
 			sourceTree = "<group>";
 		};

@@ -259,9 +259,20 @@ struct ContentView: View {
             || lensModel.lowercased().hasPrefix("7artisans")
         let focalLength35mm = numberValue(exif?["FocalLenIn35mmFilm"])
             ?? numberValue(exif?["FocalLength"])
-        if !hidesFocusDistance,
-           let focalLength35mm,
-           let focusDistance = sonyFocusDistance2(from: url, focalLength35mm: focalLength35mm) {
+        let cameraMake = ((tiff?["Make"] as? String) ?? (props["Make"] as? String) ?? "").lowercased()
+        let nikonMaker = props["{MakerNikon}"] as? [String: Any]
+        let focusDistance: Double?
+        if cameraMake.contains("nikon") {
+            let serialNumber = numberValue(exif?["BodySerialNumber"])
+                ?? numberValue(exifAux?["SerialNumber"])
+            let shutterCount = numberValue(nikonMaker?["ShutterCount"])
+            focusDistance = nikonFocusDistance(from: url, serialNumber: serialNumber, shutterCount: shutterCount)
+        } else if let focalLength35mm {
+            focusDistance = sonyFocusDistance2(from: url, focalLength35mm: focalLength35mm)
+        } else {
+            focusDistance = nil
+        }
+        if !hidesFocusDistance, let focusDistance {
             let value = focusDistance.isInfinite ? "∞" : String(format: "%.2f m", focusDistance)
             lines.append(InfoItem(label: "对焦距离", value: value))
         }
@@ -307,7 +318,54 @@ struct ContentView: View {
         if let value = value as? Double { return value }
         if let value = value as? Int { return Double(value) }
         if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
         return nil
+    }
+
+    /// Nikon Z 系列的 FocusDistance 位于加密的 LensData0801 中。
+    private func nikonFocusDistance(from url: URL, serialNumber: Double?, shutterCount: Double?) -> Double? {
+        guard let serialNumber, let shutterCount,
+              let imageData = try? Data(contentsOf: url) else { return nil }
+
+        let marker = Data("0801".utf8)
+        let searchStart = imageData.startIndex
+        while let range = imageData.range(of: marker, options: [], in: searchStart..<imageData.endIndex) {
+            let dataStart = range.lowerBound
+            let dataEnd = dataStart + 108
+            guard dataEnd <= imageData.endIndex else { return nil }
+
+            var lensData = Array(imageData[dataStart..<dataEnd])
+            nikonDecrypt(&lensData, serialNumber: UInt32(serialNumber), shutterCount: UInt32(shutterCount))
+            // LensData0801 的 0x58 在无限远时为 0。
+            if lensData[0x58] == 0 { return .infinity }
+            let rawDistance = UInt16(lensData[0x4e]) | UInt16(lensData[0x4f]) << 8
+            let distanceValue = Double(rawDistance) / 256.0
+            guard rawDistance > 0 else { return nil }
+            return pow(2.0, (distanceValue - 80.0) / 12.0)
+        }
+        return nil
+    }
+
+    private func nikonDecrypt(_ bytes: inout [UInt8], serialNumber: UInt32, shutterCount: UInt32) {
+        let xlat = nikonTranslationTable
+        let serialKey = Int(serialNumber & 0xff)
+        let countKey = Int((shutterCount & 0xff) ^ ((shutterCount >> 8) & 0xff)
+            ^ ((shutterCount >> 16) & 0xff) ^ ((shutterCount >> 24) & 0xff))
+        let ci = Int(xlat[serialKey])
+        var cj = Int(xlat[256 + countKey])
+        var ck = 0x60
+        for index in 4..<bytes.count {
+            cj = (cj + ci * ck) & 0xff
+            ck = (ck + 1) & 0xff
+            bytes[index] ^= UInt8(cj)
+        }
+    }
+
+    private var nikonTranslationTable: [UInt8] {
+        let hex = "c1bf6d0d59c5139d83616b4fc77f3d3d5359e3c7e92f95a7951fdf7f2b29c70ddf07ef71893d133d3b13fb0d89c1651fb30d6b29e3fbefa36b477f9535a7474fc7f1599535112961f13db32b0d4389c19d9d8965f1e9dfbf3d7f5397e5e995171d3d8bfbc7e367a707f171a753b52989e52ba71729e94fc5656d6bef0d89492fb34353651d49a3138959ef6bef651d0b5913e34f9db329432b071d95595947fbe5e961472f357f177fef7f959571d3a30b71a3ad0b3bb5fba3bf4f831dade92f7165a3e507353d0db5e9e5473b9def35a3bfb3df53d397534971073561712f432f11df1797fb953b7f6bd325bfadc7c5c5b58bef2fd3076b25499525496d71c7a7bcc9ad91df85e5d478d517467c294c4d03e925681186b3bdf76f6122a226342abe1e4614689d4418c240f47e5f1bad0b94b667b40be1ea959c66dce75d6c05dad5df7aeff6db1f824cc06847a1bdee3950564adddfa5f8c6daca90ca01429d8b0c7343750594de24b38034e52cdc9b3fca3345d0db5ff552c321dae222726b3ed05ba8878c065d0fdd091993d0b9fc8b0f8460331c9b45f1f0a3943a1277334d4478283c9efd655716946bfb59d0c82236dbd2639843a1048786f7a626bbd6594dbf6a2eaa2befe678b64ee02fdc7cbe5719327e2ad0b8ba29003c527da8493b2deb2549faa3aa39a7c5a7501136fbc6674af5a512657eb0dfaf4eb3617f2f"
+        return stride(from: 0, to: hex.count, by: 2).compactMap {
+            UInt8(hex[hex.index(hex.startIndex, offsetBy: $0)..<hex.index(hex.startIndex, offsetBy: $0 + 2)], radix: 16)
+        }
     }
 
     /// 读取 Sony MakerNote Tag 0x9402 中的 FocusPosition2（偏移 0x2d），并采用
