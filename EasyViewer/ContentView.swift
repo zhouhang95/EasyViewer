@@ -127,8 +127,7 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress(.space) {
-            zoomAnchor = nil
-            actualSize.toggle()
+            toggleActualSize()
             return .handled
         }
         .onKeyPress(.escape) {
@@ -335,6 +334,27 @@ struct ContentView: View {
         }
         focusPoints = currentURL.flatMap(sonyFocusPoints(from:)) ?? []
         showFocusPoints = !focusPoints.isEmpty
+    }
+
+    private func toggleActualSize() {
+        guard !actualSize else {
+            zoomAnchor = nil
+            actualSize = false
+            return
+        }
+        if let url = currentURL,
+           let points = sonyFocusPoints(from: url), !points.isEmpty {
+            // Sony 的 MakerNote Y 坐标以图片顶部为原点，NSView 以底部为原点。
+            let averageX = points.map(\.x).reduce(0, +) / CGFloat(points.count)
+            let averageY = points.map(\.y).reduce(0, +) / CGFloat(points.count)
+            zoomAnchor = ZoomAnchor(
+                imageFraction: CGPoint(x: averageX, y: 1 - averageY),
+                viewFraction: CGPoint(x: 0.5, y: 0.5)
+            )
+        } else {
+            zoomAnchor = nil
+        }
+        actualSize = true
     }
 
     /// 读取 Sony MakerNote Tag202a 中的已使用对焦点，返回图片内的归一化坐标。
