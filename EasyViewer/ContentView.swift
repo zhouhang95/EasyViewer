@@ -930,7 +930,7 @@ struct FitImageView: NSViewRepresentable {
                   let cgImage = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil),
                   bounds.width > 0, bounds.height > 0,
                   sourceImage.size.width > 0, sourceImage.size.height > 0 else { return }
-            let fitScale = min(bounds.width / sourceImage.size.width, bounds.height / sourceImage.size.height, 1)
+            let fitScale = min(bounds.width / sourceImage.size.width, bounds.height / sourceImage.size.height)
             let displaySize = NSSize(width: sourceImage.size.width * fitScale, height: sourceImage.size.height * fitScale)
             let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
             let targetPixelSize = NSSize(width: ceil(displaySize.width * backingScale), height: ceil(displaySize.height * backingScale))
@@ -942,7 +942,7 @@ struct FitImageView: NSViewRepresentable {
                   targetPixelSize.height < CGFloat(cgImage.height),
                   let preview = vImagePreview(from: cgImage, targetPixelSize: targetPixelSize) else {
                 image = sourceImage
-                imageScaling = .scaleProportionallyDown
+                imageScaling = .scaleProportionallyUpOrDown
                 return
             }
             image = NSImage(cgImage: preview, size: displaySize)
