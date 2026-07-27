@@ -147,7 +147,6 @@ struct ContentView: View {
                 GridRow {
                     Text(item.label)
                         .font(.system(.callout))
-                        .foregroundStyle(.secondary)
                     Text(item.value)
                         .font(.system(.title3, design: .monospaced))
                 }
