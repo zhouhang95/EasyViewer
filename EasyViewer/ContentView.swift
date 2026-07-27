@@ -18,6 +18,8 @@ struct ContentView: View {
     @State private var showInfoPanel = false
     @State private var actualSize = false
     @State private var zoomAnchor: ZoomAnchor?
+    @State private var showFocusPoints = false
+    @State private var focusPoints: [CGPoint] = []
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -30,13 +32,14 @@ struct ContentView: View {
                         width: actualSizeWidth(image),
                         height: actualSizeHeight(image),
                         anchor: zoomAnchor,
+                        focusPoints: showFocusPoints ? focusPoints : [],
                         onZoomOut: {
                             zoomAnchor = nil
                             actualSize = false
                         }
                     )
                 } else {
-                    FitImageView(image: image) { anchor in
+                    FitImageView(image: image, focusPoints: showFocusPoints ? focusPoints : []) { anchor in
                         zoomAnchor = anchor
                         actualSize = true
                     }
@@ -117,6 +120,10 @@ struct ContentView: View {
         }
         .onKeyPress("i") {
             showInfoPanel.toggle()
+            return .handled
+        }
+        .onKeyPress("f") {
+            toggleFocusPoints()
             return .handled
         }
         .onKeyPress(.space) {
@@ -321,6 +328,72 @@ struct ContentView: View {
         v == v.rounded() ? "\(Int(v))" : "\(v)"
     }
 
+    private func toggleFocusPoints() {
+        guard !showFocusPoints else {
+            showFocusPoints = false
+            return
+        }
+        focusPoints = currentURL.flatMap(sonyFocusPoints(from:)) ?? []
+        showFocusPoints = !focusPoints.isEmpty
+    }
+
+    /// 读取 Sony MakerNote Tag202a 中的已使用对焦点，返回图片内的归一化坐标。
+    private func sonyFocusPoints(from url: URL) -> [CGPoint]? {
+        guard let imageData = try? Data(contentsOf: url),
+              let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
+            return nil
+        }
+        let tiffStart = exifRange.upperBound
+        let marker = Data([0x2a, 0x20, 0x07, 0x00]) // Sony Tag202a, UNDEFINED
+        var searchStart = tiffStart
+        while let entryRange = imageData.range(of: marker, options: [], in: searchStart..<imageData.endIndex) {
+            let entry = entryRange.lowerBound
+            guard let byteCount = littleEndianUInt32(in: imageData, at: entry + 4),
+                  let relativeOffset = littleEndianUInt32(in: imageData, at: entry + 8),
+                  byteCount >= 6 else { return nil }
+            let dataStart = tiffStart + Int(relativeOffset)
+            let dataEnd = dataStart + Int(byteCount)
+            guard dataStart >= tiffStart, dataEnd <= imageData.count else {
+                searchStart = entry + 1
+                continue
+            }
+            let pointCount = imageData[dataStart + 1]
+            guard let areaWidth = littleEndianUInt16(in: imageData, at: dataStart + 2),
+                  let areaHeight = littleEndianUInt16(in: imageData, at: dataStart + 4),
+                  areaWidth > 0, areaHeight > 0 else { return nil }
+
+            let availableCount = min(Int(pointCount), (Int(byteCount) - 6) / 4)
+            let points = (0..<availableCount).compactMap { index -> CGPoint? in
+                let offset = dataStart + 6 + index * 4
+                guard let x = littleEndianUInt16(in: imageData, at: offset),
+                      let y = littleEndianUInt16(in: imageData, at: offset + 2),
+                      x != UInt16.max, y != UInt16.max else { return nil }
+                return CGPoint(x: CGFloat(x) / CGFloat(areaWidth), y: CGFloat(y) / CGFloat(areaHeight))
+            }
+            if !points.isEmpty { return points }
+            break // 跟踪/眼部 AF 不会写入静态点列表，改用 FocusLocation。
+        }
+        return sonyFocusLocation(in: imageData, tiffStart: tiffStart)
+    }
+
+    /// AF Tracking / Eye AF 的回退位置：宽、高、对焦点 X、对焦点 Y。
+    private func sonyFocusLocation(in imageData: Data, tiffStart: Int) -> [CGPoint]? {
+        let marker = Data([0x27, 0x20, 0x03, 0x00]) // Sony FocusLocation, SHORT[4]
+        guard let entryRange = imageData.range(of: marker, options: [], in: tiffStart..<imageData.endIndex) else {
+            return nil
+        }
+        let entry = entryRange.lowerBound
+        guard let relativeOffset = littleEndianUInt32(in: imageData, at: entry + 8) else { return nil }
+        let dataStart = tiffStart + Int(relativeOffset)
+        guard let imageWidth = littleEndianUInt16(in: imageData, at: dataStart),
+              let imageHeight = littleEndianUInt16(in: imageData, at: dataStart + 2),
+              let pointX = littleEndianUInt16(in: imageData, at: dataStart + 4),
+              let pointY = littleEndianUInt16(in: imageData, at: dataStart + 6),
+              imageWidth > 0, imageHeight > 0,
+              pointX != UInt16.max, pointY != UInt16.max else { return nil }
+        return [CGPoint(x: CGFloat(pointX) / CGFloat(imageWidth), y: CGFloat(pointY) / CGFloat(imageHeight))]
+    }
+
     private func numberValue(_ value: Any?) -> Double? {
         if let value = value as? Double { return value }
         if let value = value as? Int { return Double(value) }
@@ -415,6 +488,11 @@ struct ContentView: View {
             | UInt32(data[offset + 3]) << 24
     }
 
+    private func littleEndianUInt16(in data: Data, at offset: Int) -> UInt16? {
+        guard offset >= 0, offset + 2 <= data.count else { return nil }
+        return UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
+    }
+
     /// Sony 0x9402 使用的字节替换密码。这里只需解密 FocusPosition2 所在的一个字节。
     private func sonyDecipherByte(_ byte: UInt8) -> UInt8 {
         let table: [UInt8] = [
@@ -442,6 +520,8 @@ struct ContentView: View {
         }
         droppedImage = image
         currentURL = url
+        showFocusPoints = false
+        focusPoints = []
         loadFolder(for: url)
         isFocused = true
     }
@@ -487,6 +567,8 @@ struct ContentView: View {
               let image = NSImage(data: data) else { return }
         currentURL = url
         droppedImage = image
+        showFocusPoints = false
+        focusPoints = []
     }
 }
 
@@ -508,6 +590,7 @@ struct PanScrollView: NSViewRepresentable {
     let width: CGFloat
     let height: CGFloat
     let anchor: ZoomAnchor?
+    let focusPoints: [CGPoint]
     let onZoomOut: () -> Void
 
     func makeNSView(context: Context) -> PanScrollContainer {
@@ -517,6 +600,7 @@ struct PanScrollView: NSViewRepresentable {
         imageView.imageScaling = .scaleAxesIndependently
         imageView.imageAlignment = .alignCenter
         imageView.onZoomOut = onZoomOut
+        imageView.focusPoints = focusPoints
         scrollView.documentView = imageView
         scrollView.hasHorizontalScroller = true
         scrollView.hasVerticalScroller = true
@@ -533,12 +617,23 @@ struct PanScrollView: NSViewRepresentable {
         guard let imageView = nsView.documentView as? NSImageView else { return }
         imageView.image = image
         imageView.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        (imageView as? ZoomableImageView)?.onZoomOut = onZoomOut
+        if let imageView = imageView as? ZoomableImageView {
+            imageView.onZoomOut = onZoomOut
+            imageView.focusPoints = focusPoints
+        }
         nsView.configure(anchor: anchor)
     }
 
     final class ZoomableImageView: NSImageView {
         var onZoomOut: () -> Void = {}
+        var focusPoints: [CGPoint] = [] {
+            didSet { needsDisplay = true }
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            drawFocusPoints(focusPoints, in: bounds)
+        }
 
         override func mouseUp(with event: NSEvent) {
             if event.buttonNumber == 0 {
@@ -675,6 +770,7 @@ struct PanScrollView: NSViewRepresentable {
 // Fit 模式图片视图，支持右键显示坐标
 struct FitImageView: NSViewRepresentable {
     let image: NSImage
+    let focusPoints: [CGPoint]
     let onZoomIn: (ZoomAnchor) -> Void
 
     func makeNSView(context: Context) -> FitImageViewContainer {
@@ -687,17 +783,23 @@ struct FitImageView: NSViewRepresentable {
         view.addSubview(imageView)
         view.imageView = imageView
         view.onZoomIn = onZoomIn
+        view.focusPoints = focusPoints
         return view
     }
 
     func updateNSView(_ nsView: FitImageViewContainer, context: Context) {
         nsView.imageView?.image = image
         nsView.onZoomIn = onZoomIn
+        nsView.focusPoints = focusPoints
     }
 
     final class FitImageViewContainer: NSView {
         var imageView: NSImageView?
         var onZoomIn: (ZoomAnchor) -> Void = { _ in }
+        var focusPoints: [CGPoint] = [] {
+            didSet { focusOverlay?.focusPoints = focusPoints }
+        }
+        private var focusOverlay: FocusPointOverlayView?
 
         override func mouseUp(with event: NSEvent) {
             guard event.buttonNumber == 0,
@@ -731,6 +833,18 @@ struct FitImageView: NSViewRepresentable {
                 width: size.width,
                 height: size.height
             )
+        }
+
+        override func layout() {
+            super.layout()
+            if focusOverlay == nil {
+                let overlay = FocusPointOverlayView(frame: bounds)
+                overlay.autoresizingMask = [.width, .height]
+                overlay.imageProvider = { [weak self] in self?.imageView?.image }
+                overlay.focusPoints = focusPoints
+                addSubview(overlay)
+                focusOverlay = overlay
+            }
         }
 
         // 右键单击显示坐标
@@ -771,6 +885,43 @@ struct FitImageView: NSViewRepresentable {
             print("[EasyViewer] 窗口坐标: (x: \(String(format: "%.4f", winX)), y: \(String(format: "%.4f", winY)))")
             print("[EasyViewer] 图像坐标: (x: \(clampedX), y: \(clampedY)) / (\(pixelsW) × \(pixelsH))")
         }
+    }
+}
+
+private final class FocusPointOverlayView: NSView {
+    var imageProvider: () -> NSImage? = { nil }
+    var focusPoints: [CGPoint] = [] { didSet { needsDisplay = true } }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let image = imageProvider() else { return }
+        let imageSize = image.size
+        guard imageSize.width > 0, imageSize.height > 0 else { return }
+        let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let imageRect = NSRect(
+            x: (bounds.width - imageSize.width * scale) / 2,
+            y: (bounds.height - imageSize.height * scale) / 2,
+            width: imageSize.width * scale,
+            height: imageSize.height * scale
+        )
+        drawFocusPoints(focusPoints, in: imageRect)
+    }
+}
+
+private func drawFocusPoints(_ points: [CGPoint], in imageRect: NSRect) {
+    guard !points.isEmpty else { return }
+    NSColor.systemGreen.setStroke()
+    for point in points {
+        let center = NSPoint(
+            x: imageRect.minX + point.x * imageRect.width,
+            y: imageRect.minY + (1 - point.y) * imageRect.height
+        )
+        let size: CGFloat = 18
+        let rect = NSRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+        path.lineWidth = 2
+        path.stroke()
     }
 }
 
