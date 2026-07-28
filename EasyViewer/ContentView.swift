@@ -73,6 +73,16 @@ struct ContentView: View {
                 moveCurrentImageToTrash()
             }
         )
+        .background(
+            InfoPanelMouseHandler {
+                showInfoPanel.toggle()
+            }
+        )
+        .background(
+            MouseWheelNavigationHandler { delta in
+                navigate(delta: delta > 0 ? -1 : 1)
+            }
+        )
         .focusable()
         .focused($isFocused)
         .focusEffectDisabled()
@@ -1176,6 +1186,70 @@ struct CommandDeleteHandler: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.handler = onCommandDelete
+    }
+}
+
+/// 右键切换图片信息面板。
+struct InfoPanelMouseHandler: NSViewRepresentable {
+    var onRightClick: () -> Void
+
+    final class Coordinator {
+        var handler: () -> Void = {}
+        var monitor: Any?
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let coordinator = context.coordinator
+        coordinator.handler = onRightClick
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseUp) { [weak coordinator] event in
+            coordinator?.handler()
+            return nil
+        }
+        return NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.handler = onRightClick
+    }
+}
+
+/// 仅使用传统鼠标滚轮翻图；触控板与 Magic Mouse 的精细滚动会原样交给系统处理。
+struct MouseWheelNavigationHandler: NSViewRepresentable {
+    var onWheel: (CGFloat) -> Void
+
+    final class Coordinator {
+        var handler: (CGFloat) -> Void = { _ in }
+        var monitor: Any?
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let coordinator = context.coordinator
+        coordinator.handler = onWheel
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak coordinator] event in
+            guard !event.hasPreciseScrollingDeltas,
+                  event.scrollingDeltaY != 0 else {
+                return event
+            }
+            coordinator?.handler(event.scrollingDeltaY)
+            return nil
+        }
+        return NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.handler = onWheel
     }
 }
 
