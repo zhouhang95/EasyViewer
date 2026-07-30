@@ -229,7 +229,7 @@ struct ContentView: View {
         }
         // 镜头型号（在 {Exif} 里）
         if let v = exif?["LensModel"] as? String ?? props["LensModel"] as? String {
-            lines.append(InfoItem(label: "镜头型号", value: v))
+            lines.append(InfoItem(label: "镜头型号", value: trimMetadataText(v)))
         }
         // 镜头ID（在 {ExifAux} 里，可能是 Int 或其他类型）
         if let v = exifAux?["LensID"] {
@@ -286,7 +286,9 @@ struct ContentView: View {
         }
         // Sony 将对焦位置保存在 MakerNote 的加密 Tag9402 中。FocusDistance2 是
         // ExifTool 基于该位置与 35mm 等效焦距计算出的组合字段，不是标准 EXIF 标签。
-        let lensModel = (exif?["LensModel"] as? String) ?? (props["LensModel"] as? String) ?? ""
+        let lensModel = trimMetadataText(
+            (exif?["LensModel"] as? String) ?? (props["LensModel"] as? String) ?? ""
+        )
         let hidesFocusDistance = lensModel.lowercased().hasPrefix("viltrox")
             || lensModel.lowercased().hasPrefix("7artisans")
         let focalLength35mm = numberValue(exif?["FocalLenIn35mmFilm"])
@@ -344,6 +346,10 @@ struct ContentView: View {
 
     private func trimNumber(_ v: Double) -> String {
         v == v.rounded() ? "\(Int(v))" : "\(v)"
+    }
+
+    private func trimMetadataText(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func toggleFocusPoints() {
