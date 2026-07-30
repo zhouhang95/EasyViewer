@@ -148,7 +148,7 @@ struct ContentView: View {
         if folderImages.isEmpty {
             return current.lastPathComponent
         }
-        let index = (folderImages.firstIndex(of: current).map { $0 + 1 }) ?? 0
+        let index = (imageIndex(for: current).map { $0 + 1 }) ?? 0
         return "\(current.lastPathComponent) — (\(index) / \(folderImages.count))"
     }
 
@@ -580,6 +580,25 @@ struct ContentView: View {
         }
     }
 
+    /// 通过文件系统资源标识比较，兼容 Unicode 等价但文本不同的文件路径。
+    private func imageIndex(for url: URL) -> Int? {
+        let standardizedURL = url.standardizedFileURL
+        if let index = folderImages.firstIndex(where: { $0.standardizedFileURL == standardizedURL }) {
+            return index
+        }
+        guard let identifier = fileResourceIdentifier(for: url) else { return nil }
+        return folderImages.firstIndex { candidate in
+            fileResourceIdentifier(for: candidate)?.isEqual(identifier) == true
+        }
+    }
+
+    private func fileResourceIdentifier(for url: URL) -> NSObject? {
+        guard let values = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]) else {
+            return nil
+        }
+        return values.fileResourceIdentifier as? NSObject
+    }
+
     private func loadImage(from url: URL) {
         guard let data = try? Data(contentsOf: url),
               let image = NSImage(data: data) else {
@@ -617,7 +636,7 @@ struct ContentView: View {
         if folderImages.isEmpty {
             print("[EasyViewer] 当前图片: \(current.lastPathComponent)")
         } else {
-            let idx = (folderImages.firstIndex(of: current).map { $0 + 1 }) ?? 0
+            let idx = (imageIndex(for: current).map { $0 + 1 }) ?? 0
             print("[EasyViewer] 当前图片: \(current.lastPathComponent) — 文件夹中第 \(idx) / \(folderImages.count) 张")
         }
     }
@@ -625,7 +644,7 @@ struct ContentView: View {
     // 切换到前/后一张图片（循环）
     private func navigate(delta: Int) {
         guard let current = currentURL,
-              let idx = folderImages.firstIndex(of: current),
+              let idx = imageIndex(for: current),
               !folderImages.isEmpty else { return }
         let count = folderImages.count
         let next = ((idx + delta) % count + count) % count
@@ -640,7 +659,7 @@ struct ContentView: View {
     @discardableResult
     private func moveCurrentImageToTrash() -> Bool {
         guard let current = currentURL,
-              let index = folderImages.firstIndex(of: current) else { return false }
+              let index = imageIndex(for: current) else { return false }
         let companionRAWs = matchingRawFiles(for: current)
         do {
             try FileManager.default.trashItem(at: current, resultingItemURL: nil)
