@@ -238,7 +238,7 @@ struct ContentView: View {
         }
         // Adobe XMP 中单独记录的镜头描述。
         if let v = xmpLens.map(trimMetadataText), v != exifLensModel {
-            lines.append(InfoItem(label: "XMP镜头", value: v))
+            lines.append(InfoItem(label: "镜头描述", value: v))
         }
         // 镜头ID（在 {ExifAux} 里，可能是 Int 或其他类型）
         if let v = exifAux?["LensID"] {
