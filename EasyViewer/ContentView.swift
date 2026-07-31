@@ -208,6 +208,9 @@ struct ContentView: View {
         let tiff = props["{TIFF}"] as? [String: Any]
         let gps = props["{GPS}"] as? [String: Any]
         let exifAux = props["{ExifAux}"] as? [String: Any]
+        let xmpLens = CGImageSourceCopyMetadataAtIndex(src, 0, nil).flatMap {
+            CGImageMetadataCopyStringValueWithPath($0, nil, "aux:Lens" as CFString) as String?
+        }
         // print("[EasyViewer] props 所有 key: \(props.keys.sorted())")
         // print("[EasyViewer] {ExifAux} 所有 key: \(exifAux?.keys.sorted() ?? [])")
         // print("[EasyViewer] {Exif} 所有 key: \(exif?.keys.sorted() ?? [])")
@@ -228,8 +231,14 @@ struct ContentView: View {
             lines.append(InfoItem(label: "镜头品牌", value: v))
         }
         // 镜头型号（在 {Exif} 里）
-        if let v = exif?["LensModel"] as? String ?? props["LensModel"] as? String {
-            lines.append(InfoItem(label: "镜头型号", value: trimMetadataText(v)))
+        let exifLensModel = (exif?["LensModel"] as? String ?? props["LensModel"] as? String)
+            .map(trimMetadataText)
+        if let exifLensModel {
+            lines.append(InfoItem(label: "镜头型号", value: exifLensModel))
+        }
+        // Adobe XMP 中单独记录的镜头描述。
+        if let v = xmpLens.map(trimMetadataText), v != exifLensModel {
+            lines.append(InfoItem(label: "XMP镜头", value: v))
         }
         // 镜头ID（在 {ExifAux} 里，可能是 Int 或其他类型）
         if let v = exifAux?["LensID"] {
