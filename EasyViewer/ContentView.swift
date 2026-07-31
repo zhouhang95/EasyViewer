@@ -743,6 +743,7 @@ struct PanScrollView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PanScrollContainer {
         let scrollView = PanScrollContainer()
+        scrollView.contentView = CenteredClipView()
         let imageView = ZoomableImageView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         imageView.image = image
         imageView.imageScaling = .scaleAxesIndependently
@@ -750,15 +751,30 @@ struct PanScrollView: NSViewRepresentable {
         imageView.onZoomOut = onZoomOut
         imageView.focusPoints = focusPoints
         scrollView.documentView = imageView
-        scrollView.hasHorizontalScroller = true
-        scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
         scrollView.drawsBackground = false
         scrollView.backgroundColor = .clear
         scrollView.contentView.backgroundColor = .clear
         scrollView.usesPredominantAxisScrolling = false
         scrollView.configure(anchor: anchor)
         return scrollView
+    }
+
+    /// 图片小于可视区域时，仅在未铺满的方向上居中。
+    final class CenteredClipView: NSClipView {
+        override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+            var bounds = super.constrainBoundsRect(proposedBounds)
+            guard let documentView else { return bounds }
+
+            if documentView.frame.width < proposedBounds.width {
+                bounds.origin.x = (documentView.frame.width - proposedBounds.width) / 2
+            }
+            if documentView.frame.height < proposedBounds.height {
+                bounds.origin.y = (documentView.frame.height - proposedBounds.height) / 2
+            }
+            return bounds
+        }
     }
 
     func updateNSView(_ nsView: PanScrollContainer, context: Context) {
@@ -817,14 +833,35 @@ struct PanScrollView: NSViewRepresentable {
                 positionContent(at: anchor)
                 pendingAnchor = nil
             }
+            centerUndersizedAxes()
         }
 
         private func centerContent() {
             guard let docFrame = documentView?.frame else { return }
             let clipBounds = contentView.bounds
-            let maxX = max(0, docFrame.width - clipBounds.width)
-            let maxY = max(0, docFrame.height - clipBounds.height)
-            contentView.scroll(to: NSPoint(x: maxX / 2, y: maxY / 2))
+            contentView.scroll(to: NSPoint(
+                x: (docFrame.width - clipBounds.width) / 2,
+                y: (docFrame.height - clipBounds.height) / 2
+            ))
+        }
+
+        private func centerUndersizedAxes() {
+            guard let docFrame = documentView?.frame else { return }
+            let clipBounds = contentView.bounds
+            var origin = clipBounds.origin
+            var needsAdjustment = false
+
+            if docFrame.width < clipBounds.width {
+                origin.x = (docFrame.width - clipBounds.width) / 2
+                needsAdjustment = true
+            }
+            if docFrame.height < clipBounds.height {
+                origin.y = (docFrame.height - clipBounds.height) / 2
+                needsAdjustment = true
+            }
+            if needsAdjustment, origin != clipBounds.origin {
+                contentView.scroll(to: origin)
+            }
         }
 
         private func positionContent(at anchor: ZoomAnchor) {
