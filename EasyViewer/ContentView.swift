@@ -293,6 +293,16 @@ struct ContentView: View {
             }
 
         }
+        // 仅在与实际焦距不同时显示 35mm 等效焦距。
+        if let focalLength = numberValue(exif?["FocalLength"]),
+           let equivalentFocalLength = numberValue(exif?["FocalLenIn35mmFilm"]),
+           focalLength > 0, equivalentFocalLength > 0,
+           abs(equivalentFocalLength - focalLength) > 0.0001 {
+            lines.append(InfoItem(
+                label: "35mm等效焦距",
+                value: "\(trimNumber(equivalentFocalLength)) mm"
+            ))
+        }
         // Sony 将对焦位置保存在 MakerNote 的加密 Tag9402 中。FocusDistance2 是
         // ExifTool 基于该位置与 35mm 等效焦距计算出的组合字段，不是标准 EXIF 标签。
         let lensModel = trimMetadataText(
@@ -379,19 +389,19 @@ struct ContentView: View {
             actualSize = false
             return
         }
-        if let url = currentURL,
-           let points = sonyFocusPoints(from: url), !points.isEmpty {
-            // Sony 的 MakerNote Y 坐标以图片顶部为原点，NSView 以底部为原点。
-            let averageX = points.map(\.x).reduce(0, +) / CGFloat(points.count)
-            let averageY = points.map(\.y).reduce(0, +) / CGFloat(points.count)
-            zoomAnchor = ZoomAnchor(
-                imageFraction: CGPoint(x: averageX, y: 1 - averageY),
-                viewFraction: CGPoint(x: 0.5, y: 0.5)
-            )
-        } else {
-            zoomAnchor = nil
-        }
+        zoomAnchor = currentURL.flatMap(focusPointAnchor(for:))
         actualSize = true
+    }
+
+    /// Sony 的 MakerNote Y 坐标以图片顶部为原点，NSView 以底部为原点。
+    private func focusPointAnchor(for url: URL) -> ZoomAnchor? {
+        guard let points = sonyFocusPoints(from: url), !points.isEmpty else { return nil }
+        let averageX = points.map(\.x).reduce(0, +) / CGFloat(points.count)
+        let averageY = points.map(\.y).reduce(0, +) / CGFloat(points.count)
+        return ZoomAnchor(
+            imageFraction: CGPoint(x: averageX, y: 1 - averageY),
+            viewFraction: CGPoint(x: 0.5, y: 0.5)
+        )
     }
 
     /// 读取 Sony MakerNote Tag202a 中的已使用对焦点，返回图片内的归一化坐标。
@@ -668,6 +678,9 @@ struct ContentView: View {
               let image = NSImage(data: data) else { return }
         currentURL = url
         droppedImage = image
+        if actualSize {
+            zoomAnchor = focusPointAnchor(for: url)
+        }
         refreshFocusPoints()
     }
 
@@ -709,6 +722,9 @@ struct ContentView: View {
         }
         currentURL = nextURL
         droppedImage = image
+        if actualSize {
+            zoomAnchor = focusPointAnchor(for: nextURL)
+        }
         refreshFocusPoints()
         return true
     }
@@ -766,7 +782,7 @@ struct PanScrollView: NSViewRepresentable {
         scrollView.backgroundColor = .clear
         scrollView.contentView.backgroundColor = .clear
         scrollView.usesPredominantAxisScrolling = false
-        scrollView.configure(anchor: anchor)
+        scrollView.configure(anchor: anchor, image: image)
         return scrollView
     }
 
@@ -794,7 +810,7 @@ struct PanScrollView: NSViewRepresentable {
             imageView.onZoomOut = onZoomOut
             imageView.focusPoints = focusPoints
         }
-        nsView.configure(anchor: anchor)
+        nsView.configure(anchor: anchor, image: image)
     }
 
     final class ZoomableImageView: NSImageView {
@@ -822,12 +838,14 @@ struct PanScrollView: NSViewRepresentable {
         var needsCentering = false
         private var pendingAnchor: ZoomAnchor?
         private var appliedAnchor: ZoomAnchor?
+        private var appliedImage: NSImage?
         private var hasConfiguredAnchor = false
 
-        func configure(anchor: ZoomAnchor?) {
-            guard !hasConfiguredAnchor || anchor != appliedAnchor else { return }
+        func configure(anchor: ZoomAnchor?, image: NSImage) {
+            guard !hasConfiguredAnchor || anchor != appliedAnchor || image !== appliedImage else { return }
             pendingAnchor = anchor
             appliedAnchor = anchor
+            appliedImage = image
             hasConfiguredAnchor = true
             needsCentering = anchor == nil
             needsLayout = true
