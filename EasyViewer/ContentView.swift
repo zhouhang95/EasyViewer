@@ -130,6 +130,10 @@ struct ContentView: View {
             toggleActualSize()
             return .handled
         }
+        .onKeyPress(.escape) {
+            NSApplication.shared.terminate(nil)
+            return .handled
+        }
         .onAppear {
             isFocused = true
         }
