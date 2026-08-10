@@ -451,7 +451,7 @@ struct ContentView: View {
         if make.contains("panasonic") { return panasonicFocusPoints(from: url) }
         if make.contains("nikon") { return nikonFocusPoints(from: url) }
         if make.contains("canon") { return canonFocusPoints(from: url) }
-        return sonyFocusPoints(from: url)
+        return fujifilmFocusPoints(from: url) ?? sonyFocusPoints(from: url)
     }
 
     private func cameraMake(from url: URL) -> String {
@@ -567,6 +567,32 @@ struct ContentView: View {
             searchStart = range.upperBound
         }
         return nil
+    }
+
+    /// Fujifilm 将已使用的对焦点像素坐标保存在 MakerNote Tag 0x1023（FocusPixel）。
+    private func fujifilmFocusPoints(from url: URL) -> [CGPoint]? {
+        guard let imageData = try? Data(contentsOf: url),
+              imageData.range(of: Data("FUJIFILM".utf8)) != nil,
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+              let imageWidth = numberValue(properties["PixelWidth"]),
+              let imageHeight = numberValue(properties["PixelHeight"]),
+              imageWidth > 0, imageHeight > 0 else {
+            return nil
+        }
+        let marker = Data([0x23, 0x10, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00])
+        guard let range = imageData.range(of: marker) else { return nil }
+        let entry = range.lowerBound
+        guard let pointX = littleEndianUInt16(in: imageData, at: entry + 8),
+              let pointY = littleEndianUInt16(in: imageData, at: entry + 10),
+              Double(pointX) < imageWidth, Double(pointY) < imageHeight else {
+            return nil
+        }
+        let point = CGPoint(
+            x: CGFloat(Double(pointX) / imageWidth),
+            y: CGFloat(Double(pointY) / imageHeight)
+        )
+        return orientFocusPoints([point], orientation: imageOrientation(from: url))
     }
 
     /// Nikon Z（Expeed 6，AFInfo2 03xx）将 AF 区域中心保存为相对 AF 图像的像素坐标。
