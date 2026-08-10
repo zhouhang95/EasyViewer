@@ -450,6 +450,7 @@ struct ContentView: View {
         let make = cameraMake(from: url)
         if make.contains("panasonic") { return panasonicFocusPoints(from: url) }
         if make.contains("nikon") { return nikonFocusPoints(from: url) }
+        if make.contains("canon") { return canonFocusPoints(from: url) }
         return sonyFocusPoints(from: url)
     }
 
@@ -497,6 +498,73 @@ struct ContentView: View {
                 continue
             }
             return orientFocusPoints([point], orientation: imageOrientation(from: url))
+        }
+        return nil
+    }
+
+    /// Canon EOS R 系列的 AFInfo2（MakerNote Tag 0x0026）保存了有效对焦点坐标与对焦状态位图。
+    private func canonFocusPoints(from url: URL) -> [CGPoint]? {
+        guard let imageData = try? Data(contentsOf: url),
+              let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
+            return nil
+        }
+        let tiffStart = exifRange.upperBound
+        let marker = Data([0x26, 0x00, 0x03, 0x00]) // CanonAFInfo2, SHORT
+        var searchStart = tiffStart
+        while let range = imageData.range(of: marker, options: [], in: searchStart..<imageData.endIndex) {
+            let entry = range.lowerBound
+            guard let valueCount = littleEndianUInt32(in: imageData, at: entry + 4),
+                  let relativeOffset = littleEndianUInt32(in: imageData, at: entry + 8),
+                  valueCount >= 16 else {
+                searchStart = range.upperBound
+                continue
+            }
+            let dataStart = tiffStart + Int(relativeOffset)
+            let dataEnd = dataStart + Int(valueCount) * 2
+            guard dataStart >= tiffStart, dataEnd <= imageData.endIndex,
+                  let pointCount = littleEndianUInt16(in: imageData, at: dataStart + 4),
+                  let validPointCount = littleEndianUInt16(in: imageData, at: dataStart + 6),
+                  let imageWidth = littleEndianUInt16(in: imageData, at: dataStart + 12),
+                  let imageHeight = littleEndianUInt16(in: imageData, at: dataStart + 14),
+                  pointCount > 0, pointCount <= 5000,
+                  validPointCount > 0, imageWidth > 0, imageHeight > 0 else {
+                searchStart = range.upperBound
+                continue
+            }
+
+            let count = Int(pointCount)
+            let pointLimit = min(Int(validPointCount), count)
+            let widthsOffset = dataStart + 16
+            let heightsOffset = widthsOffset + count * 2
+            let xOffset = heightsOffset + count * 2
+            let yOffset = xOffset + count * 2
+            let focusBitsOffset = yOffset + count * 2
+            let focusBitsSize = ((count + 15) / 16) * 2
+            guard focusBitsOffset + focusBitsSize <= dataEnd else {
+                searchStart = range.upperBound
+                continue
+            }
+
+            let focusedPoints = (0..<pointLimit).compactMap { index -> CGPoint? in
+                guard let width = littleEndianInt16(in: imageData, at: widthsOffset + index * 2),
+                      let height = littleEndianInt16(in: imageData, at: heightsOffset + index * 2),
+                      let x = littleEndianInt16(in: imageData, at: xOffset + index * 2),
+                      let y = littleEndianInt16(in: imageData, at: yOffset + index * 2),
+                      width > 0, height > 0,
+                      let word = littleEndianUInt16(in: imageData, at: focusBitsOffset + (index / 16) * 2),
+                      (word & (UInt16(1) << UInt16(index % 16))) != 0 else {
+                    return nil
+                }
+                // Canon EOS 的 AF 坐标以画面中心为原点，Y 轴向上为正。
+                return CGPoint(
+                    x: 0.5 + CGFloat(x) / CGFloat(imageWidth),
+                    y: 0.5 - CGFloat(y) / CGFloat(imageHeight)
+                )
+            }
+            if !focusedPoints.isEmpty {
+                return orientFocusPoints(focusedPoints, orientation: imageOrientation(from: url))
+            }
+            searchStart = range.upperBound
         }
         return nil
     }
@@ -671,6 +739,10 @@ struct ContentView: View {
     private func littleEndianUInt16(in data: Data, at offset: Int) -> UInt16? {
         guard offset >= 0, offset + 2 <= data.count else { return nil }
         return UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
+    }
+
+    private func littleEndianInt16(in data: Data, at offset: Int) -> Int16? {
+        littleEndianUInt16(in: data, at: offset).map(Int16.init(bitPattern:))
     }
 
     /// Sony 0x9402 使用的字节替换密码。这里只需解密 FocusPosition2 所在的一个字节。
