@@ -447,7 +447,58 @@ struct ContentView: View {
 
     /// 读取目前支持的相机对焦点，坐标已转换为图片显示方向。
     private func focusPoints(from url: URL) -> [CGPoint]? {
-        nikonFocusPoints(from: url) ?? sonyFocusPoints(from: url)
+        let make = cameraMake(from: url)
+        if make.contains("panasonic") { return panasonicFocusPoints(from: url) }
+        if make.contains("nikon") { return nikonFocusPoints(from: url) }
+        return sonyFocusPoints(from: url)
+    }
+
+    private func cameraMake(from url: URL) -> String {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else {
+            return ""
+        }
+        let tiff = properties["{TIFF}"] as? [String: Any]
+        return ((tiff?["Make"] as? String) ?? (properties["Make"] as? String) ?? "").lowercased()
+    }
+
+    /// Panasonic 将主 AF 区中心以 0 到 1 的归一化坐标写入 MakerNote Tag 0x004d。
+    private func panasonicFocusPoints(from url: URL) -> [CGPoint]? {
+        guard let imageData = try? Data(contentsOf: url),
+              let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
+            return nil
+        }
+        let tiffStart = exifRange.upperBound
+        let marker = Data([0x4d, 0x00, 0x05, 0x00, 0x02, 0x00, 0x00, 0x00])
+        var searchStart = tiffStart
+        while let range = imageData.range(of: marker, options: [], in: searchStart..<imageData.endIndex) {
+            let entry = range.lowerBound
+            guard let relativeOffset = littleEndianUInt32(in: imageData, at: entry + 8) else {
+                searchStart = range.upperBound
+                continue
+            }
+            let dataStart = tiffStart + Int(relativeOffset)
+            guard dataStart >= tiffStart,
+                  dataStart + 16 <= imageData.endIndex,
+                  let xNumerator = littleEndianUInt32(in: imageData, at: dataStart),
+                  let xDenominator = littleEndianUInt32(in: imageData, at: dataStart + 4),
+                  let yNumerator = littleEndianUInt32(in: imageData, at: dataStart + 8),
+                  let yDenominator = littleEndianUInt32(in: imageData, at: dataStart + 12),
+                  xDenominator > 0, yDenominator > 0 else {
+                searchStart = range.upperBound
+                continue
+            }
+            let point = CGPoint(
+                x: CGFloat(Double(xNumerator) / Double(xDenominator)),
+                y: CGFloat(Double(yNumerator) / Double(yDenominator))
+            )
+            guard (0...1).contains(point.x), (0...1).contains(point.y) else {
+                searchStart = range.upperBound
+                continue
+            }
+            return orientFocusPoints([point], orientation: imageOrientation(from: url))
+        }
+        return nil
     }
 
     /// Nikon Z（Expeed 6，AFInfo2 03xx）将 AF 区域中心保存为相对 AF 图像的像素坐标。
