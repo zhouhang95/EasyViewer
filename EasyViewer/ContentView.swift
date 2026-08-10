@@ -379,7 +379,7 @@ struct ContentView: View {
     /// 对焦框开关属于当前窗口；图片切换时仅更新该图的点位数据。
     private func refreshFocusPoints() {
         focusPoints = showFocusPoints
-            ? (currentURL.flatMap(sonyFocusPoints(from:)) ?? [])
+            ? (currentURL.flatMap(focusPoints(from:)) ?? [])
             : []
     }
 
@@ -395,7 +395,7 @@ struct ContentView: View {
 
     /// Sony 的 MakerNote Y 坐标以图片顶部为原点，NSView 以底部为原点。
     private func focusPointAnchor(for url: URL) -> ZoomAnchor? {
-        guard let points = sonyFocusPoints(from: url), !points.isEmpty else { return nil }
+        guard let points = focusPoints(from: url), !points.isEmpty else { return nil }
         let averageX = points.map(\.x).reduce(0, +) / CGFloat(points.count)
         let averageY = points.map(\.y).reduce(0, +) / CGFloat(points.count)
         return ZoomAnchor(
@@ -443,6 +443,42 @@ struct ContentView: View {
         }
         return sonyFocusLocation(in: imageData, tiffStart: tiffStart)
             .map { orientFocusPoints($0, orientation: orientation) }
+    }
+
+    /// 读取目前支持的相机对焦点，坐标已转换为图片显示方向。
+    private func focusPoints(from url: URL) -> [CGPoint]? {
+        nikonFocusPoints(from: url) ?? sonyFocusPoints(from: url)
+    }
+
+    /// Nikon Z（Expeed 6，AFInfo2 03xx）将 AF 区域中心保存为相对 AF 图像的像素坐标。
+    private func nikonFocusPoints(from url: URL) -> [CGPoint]? {
+        guard let imageData = try? Data(contentsOf: url),
+              imageData.range(of: Data("Nikon\0".utf8)) != nil else { return nil }
+
+        for version in [Data("0300".utf8), Data("0301".utf8)] {
+            var searchStart = imageData.startIndex
+            while let range = imageData.range(of: version, options: [], in: searchStart..<imageData.endIndex) {
+                let dataStart = range.lowerBound
+                let dataEnd = dataStart + 0x36
+                guard dataEnd <= imageData.endIndex,
+                      imageData[dataStart + 7] == 1,
+                      let imageWidth = littleEndianUInt16(in: imageData, at: dataStart + 0x2a),
+                      let imageHeight = littleEndianUInt16(in: imageData, at: dataStart + 0x2c),
+                      let pointX = littleEndianUInt16(in: imageData, at: dataStart + 0x2e),
+                      let pointY = littleEndianUInt16(in: imageData, at: dataStart + 0x30),
+                      imageWidth > 0, imageHeight > 0,
+                      pointX < imageWidth, pointY < imageHeight else {
+                    searchStart = range.upperBound
+                    continue
+                }
+                let point = CGPoint(
+                    x: CGFloat(pointX) / CGFloat(imageWidth),
+                    y: CGFloat(pointY) / CGFloat(imageHeight)
+                )
+                return orientFocusPoints([point], orientation: imageOrientation(from: url))
+            }
+        }
+        return nil
     }
 
     private func imageOrientation(from url: URL) -> Int {
