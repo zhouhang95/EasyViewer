@@ -153,14 +153,25 @@ struct ContentView: View {
     }
 
     private var infoPanel: some View {
-        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
-            ForEach(infoLines, id: \.self) { item in
-                GridRow {
-                    Text(item.label)
-                        .font(.system(.callout))
-                    Text(item.value)
-                        .font(.system(.title3, design: .monospaced))
+        VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                ForEach(infoLines, id: \.self) { item in
+                    GridRow {
+                        Text(item.label)
+                            .font(.system(.callout))
+                        Text(item.value)
+                            .font(.system(.title3, design: .monospaced))
+                    }
                 }
+            }
+
+            if let googleMapsURL {
+                Button {
+                    NSWorkspace.shared.open(googleMapsURL)
+                } label: {
+                    Label("在 Google 地图中打开", systemImage: "map")
+                }
+                .buttonStyle(.bordered)
             }
         }
         .padding(.horizontal, 14)
@@ -169,6 +180,36 @@ struct ContentView: View {
         .shadow(radius: 4)
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// 仅当图片含有完整 GPS 经纬度时生成 Google Maps 搜索链接。
+    private var googleMapsURL: URL? {
+        guard let url = currentURL,
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+              let gps = properties["{GPS}"] as? [String: Any],
+              var latitude = numberValue(gps["Latitude"]),
+              var longitude = numberValue(gps["Longitude"]) else {
+            return nil
+        }
+
+        switch (gps["LatitudeRef"] as? String)?.uppercased() {
+        case "N": latitude = abs(latitude)
+        case "S": latitude = -abs(latitude)
+        default: break
+        }
+        switch (gps["LongitudeRef"] as? String)?.uppercased() {
+        case "E": longitude = abs(longitude)
+        case "W": longitude = -abs(longitude)
+        default: break
+        }
+
+        var components = URLComponents(string: "https://www.google.com/maps/search/")
+        components?.queryItems = [
+            URLQueryItem(name: "api", value: "1"),
+            URLQueryItem(name: "query", value: "\(latitude),\(longitude)")
+        ]
+        return components?.url
     }
 
     // 1:1 像素显示：实际像素 / 屏幕缩放因子（Retina 为 2）
@@ -282,10 +323,6 @@ struct ContentView: View {
         if let v = exif?["Flash"] as? Int {
             lines.append(InfoItem(label: "闪光灯", value: (v & 0x01) != 0 ? "触发" : "未触发"))
         }
-        // 白平衡
-        if let v = exif?["WhiteBalance"] as? Int {
-            lines.append(InfoItem(label: "白平衡", value: v == 0 ? "自动" : "手动"))
-        }
         // 焦距
         if let v = exif?["FocalLength"] as? Double {
             if v > 0.0 {
@@ -328,6 +365,17 @@ struct ContentView: View {
         if !hidesFocusDistance, let focusDistance {
             let value = focusDistance.isInfinite ? "∞" : String(format: "%.2f m", focusDistance)
             lines.append(InfoItem(label: "对焦距离", value: value))
+        }
+        // Sony 将色温和 CreativeStyle 存储在 MakerNote 中，ImageIO 不会将其公开为属性。
+        if cameraMake.contains("sony") {
+            if let colorTemperature = sonyMakerNoteValue(from: url, tag: 0xb021) {
+                let value = colorTemperature == 0 ? "自动" : "\(colorTemperature) K"
+                lines.append(InfoItem(label: "色温", value: value))
+            }
+            if let creativeStyle = sonyMakerNoteString(from: url, tag: 0xb020),
+               creativeStyle.caseInsensitiveCompare("Off") != .orderedSame {
+                lines.append(InfoItem(label: "创意外观", value: creativeStyle))
+            }
         }
         // 纬度
         if let v = gps?["Latitude"] as? Double {
@@ -752,6 +800,54 @@ struct ContentView: View {
             return (pow(2.0, Double(position) / 16.0 - 5.0) + 1.0) * focalLength35mm / 1000.0
         }
         return nil
+    }
+
+    /// 读取 Sony MakerNote 中以 ASCII 形式保存的标签值。
+    private func sonyMakerNoteString(from url: URL, tag: UInt16) -> String? {
+        guard let imageData = try? Data(contentsOf: url),
+              let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
+            return nil
+        }
+        let tiffStart = exifRange.upperBound
+        let marker = Data([
+            UInt8(tag & 0xff), UInt8(tag >> 8),
+            0x02, 0x00 // ASCII
+        ])
+        guard let entryRange = imageData.range(of: marker, options: [], in: tiffStart..<imageData.endIndex),
+              let byteCount = littleEndianUInt32(in: imageData, at: entryRange.lowerBound + 4),
+              byteCount > 0 else {
+            return nil
+        }
+        let entry = entryRange.lowerBound
+        let dataStart: Int
+        if byteCount <= 4 {
+            dataStart = entry + 8
+        } else {
+            guard let relativeOffset = littleEndianUInt32(in: imageData, at: entry + 8) else { return nil }
+            dataStart = tiffStart + Int(relativeOffset)
+        }
+        let dataEnd = dataStart + Int(byteCount)
+        guard dataStart >= tiffStart, dataEnd <= imageData.count else { return nil }
+        return String(data: imageData[dataStart..<dataEnd], encoding: .ascii)?
+            .trimmingCharacters(in: .controlCharacters.union(.whitespacesAndNewlines))
+    }
+
+    /// 读取 Sony MakerNote 中以 LONG 形式保存的标签值。
+    private func sonyMakerNoteValue(from url: URL, tag: UInt16) -> UInt32? {
+        guard let imageData = try? Data(contentsOf: url),
+              let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
+            return nil
+        }
+        let tiffStart = exifRange.upperBound
+        let marker = Data([
+            UInt8(tag & 0xff), UInt8(tag >> 8),
+            0x04, 0x00, // LONG
+            0x01, 0x00, 0x00, 0x00 // 单个值
+        ])
+        guard let entryRange = imageData.range(of: marker, options: [], in: tiffStart..<imageData.endIndex) else {
+            return nil
+        }
+        return littleEndianUInt32(in: imageData, at: entryRange.lowerBound + 8)
     }
 
     private func littleEndianUInt32(in data: Data, at offset: Int) -> UInt32? {
