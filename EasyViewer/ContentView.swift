@@ -63,7 +63,7 @@ struct ContentView: View {
                     antialiased: true
                 )
         )
-        .background(
+        .overlay(
             FileDropZone(isTargeted: $isTargeted) { url in
                 loadImage(from: url)
             }
@@ -1489,6 +1489,12 @@ struct FileDropZone: NSViewRepresentable {
         required init?(coder: NSCoder) {
             super.init(coder: coder)
             registerForDraggedTypes([.fileURL])
+        }
+
+        // 作为覆盖层时不抢占点击、滚轮和缩放手势；Finder 拖拽进入时 AppKit 会以
+        // leftMouseDragged 事件进行命中测试，此时返回自身以接收拖放。
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            NSApp.currentEvent?.type == .leftMouseDragged ? self : nil
         }
 
         private func firstImageURL(from board: NSPasteboard) -> URL? {
