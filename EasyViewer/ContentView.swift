@@ -304,7 +304,7 @@ struct ContentView: View {
         // 光圈值
         if let v = exif?["FNumber"] as? Double {
             if v > 0.0 {
-                lines.append(InfoItem(label: "光圈值", value: "f/\(trimNumber(v))"))
+                lines.append(InfoItem(label: "光圈值", value: String(format: "f/%.1f", v)))
             }
 
         }
@@ -345,8 +345,7 @@ struct ContentView: View {
         let lensModel = trimMetadataText(
             (exif?["LensModel"] as? String) ?? (props["LensModel"] as? String) ?? ""
         )
-        let hidesFocusDistance = lensModel.lowercased().hasPrefix("viltrox")
-            || lensModel.lowercased().hasPrefix("7artisans")
+        let hidesFocusDistance = lensModel.lowercased().hasPrefix("7artisans")
         let focalLength35mm = numberValue(exif?["FocalLenIn35mmFilm"])
             ?? numberValue(exif?["FocalLength"])
         let cameraMake = ((tiff?["Make"] as? String) ?? (props["Make"] as? String) ?? "").lowercased()
@@ -362,9 +361,8 @@ struct ContentView: View {
         } else {
             focusDistance = nil
         }
-        if !hidesFocusDistance, let focusDistance {
-            let value = focusDistance.isInfinite ? "∞" : String(format: "%.2f m", focusDistance)
-            lines.append(InfoItem(label: "对焦距离", value: value))
+        if !hidesFocusDistance, let focusDistance, !focusDistance.isInfinite {
+            lines.append(InfoItem(label: "对焦距离", value: String(format: "%.2f m", focusDistance)))
         }
         // Sony 将色温和 CreativeStyle 存储在 MakerNote 中，ImageIO 不会将其公开为属性。
         if cameraMake.contains("sony") {
