@@ -371,8 +371,16 @@ struct ContentView: View {
                 lines.append(InfoItem(label: "色温", value: value))
             }
             if let creativeStyle = sonyMakerNoteString(from: url, tag: 0xb020) {
-                let value = creativeStyle.caseInsensitiveCompare("Off") == .orderedSame ? "PP" : creativeStyle
+                let value = creativeStyle.caseInsensitiveCompare("Off") == .orderedSame ? "图片配置文件" : creativeStyle
                 lines.append(InfoItem(label: "创意外观", value: value))
+            }
+        }
+        if cameraMake.contains("panasonic") {
+            if let colorTemperature = panasonicMakerNoteValue(from: url, tag: 0x0044), colorTemperature > 0 {
+                lines.append(InfoItem(label: "色温", value: "\(colorTemperature) K"))
+            }
+            if let photoStyle = panasonicMakerNoteValue(from: url, tag: 0x0089) {
+                lines.append(InfoItem(label: "照片风格", value: panasonicPhotoStyleName(photoStyle)))
             }
         }
         // 纬度
@@ -546,6 +554,34 @@ struct ContentView: View {
             return orientFocusPoints([point], orientation: imageOrientation(from: url))
         }
         return nil
+    }
+
+    /// Panasonic 将多个拍摄参数作为 SHORT 值存放在 MakerNote IFD 中。
+    private func panasonicMakerNoteValue(from url: URL, tag: UInt16) -> UInt16? {
+        guard let imageData = try? Data(contentsOf: url),
+              let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
+            return nil
+        }
+        let tiffStart = exifRange.upperBound
+        let marker = Data([
+            UInt8(tag & 0xff), UInt8(tag >> 8),
+            0x03, 0x00, // SHORT
+            0x01, 0x00, 0x00, 0x00 // 单个值
+        ])
+        guard let entryRange = imageData.range(of: marker, options: [], in: tiffStart..<imageData.endIndex) else {
+            return nil
+        }
+        return littleEndianUInt16(in: imageData, at: entryRange.lowerBound + 8)
+    }
+
+    private func panasonicPhotoStyleName(_ value: UInt16) -> String {
+        let names: [UInt16: String] = [
+            0: "Auto", 1: "Standard", 2: "Vivid", 3: "Natural",
+            4: "Monochrome", 5: "Scenery", 6: "Portrait", 8: "Cinelike D",
+            9: "Cinelike V", 11: "L. Monochrome", 12: "Like709",
+            15: "L. Monochrome D", 17: "V-Log", 18: "Cinelike D2"
+        ]
+        return names[value] ?? "Unknown (\(value))"
     }
 
     /// Canon EOS R 系列的 AFInfo2（MakerNote Tag 0x0026）保存了有效对焦点坐标与对焦状态位图。
