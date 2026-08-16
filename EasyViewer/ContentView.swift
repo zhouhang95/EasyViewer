@@ -370,9 +370,9 @@ struct ContentView: View {
                 let value = colorTemperature == 0 ? "自动" : "\(colorTemperature) K"
                 lines.append(InfoItem(label: "色温", value: value))
             }
-            if let creativeStyle = sonyMakerNoteString(from: url, tag: 0xb020),
-               creativeStyle.caseInsensitiveCompare("Off") != .orderedSame {
-                lines.append(InfoItem(label: "创意外观", value: creativeStyle))
+            if let creativeStyle = sonyMakerNoteString(from: url, tag: 0xb020) {
+                let value = creativeStyle.caseInsensitiveCompare("Off") == .orderedSame ? "PP" : creativeStyle
+                lines.append(InfoItem(label: "创意外观", value: value))
             }
         }
         // 纬度
