@@ -334,7 +334,7 @@ struct ContentView: View {
         if let focalLength = numberValue(exif?["FocalLength"]),
            let equivalentFocalLength = numberValue(exif?["FocalLenIn35mmFilm"]),
            focalLength > 0, equivalentFocalLength > 0,
-           abs(equivalentFocalLength - focalLength) > 0.0001 {
+           abs(equivalentFocalLength - focalLength) >= 1 {
             lines.append(InfoItem(
                 label: "35mm等效焦距",
                 value: "\(trimNumber(equivalentFocalLength)) mm"
