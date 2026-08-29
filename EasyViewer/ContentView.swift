@@ -21,6 +21,8 @@ struct ContentView: View {
     @State private var zoomAnchor: ZoomAnchor?
     @State private var showFocusPoints = false
     @State private var focusPoints: [CGPoint] = []
+    @State private var toastMessage: String?
+    @State private var toastDismissTask: Task<Void, Never>?
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -52,7 +54,23 @@ struct ContentView: View {
             if showInfoPanel, !infoLines.isEmpty {
                 infoPanel
             }
+
+            if let toastMessage {
+                VStack {
+                    Spacer()
+                    Text(toastMessage)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.black.opacity(0.78), in: Capsule())
+                        .padding(.bottom, 28)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+                .allowsHitTesting(false)
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: toastMessage)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(isTargeted ? Color.accentColor.opacity(0.1) : Color.clear)
         .overlay(
@@ -974,7 +992,21 @@ struct ContentView: View {
         guard let currentURL else { return false }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        return pasteboard.writeObjects([currentURL as NSURL])
+        let didCopy = pasteboard.writeObjects([currentURL as NSURL])
+        if didCopy {
+            showToast("图片已复制")
+        }
+        return didCopy
+    }
+
+    private func showToast(_ message: String) {
+        toastDismissTask?.cancel()
+        toastMessage = message
+        toastDismissTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            guard !Task.isCancelled else { return }
+            toastMessage = nil
+        }
     }
 
     // 枚举同一文件夹下的所有图片，按文件名排序
@@ -1035,6 +1067,7 @@ struct ContentView: View {
             print("[EasyViewer] 无法移到废纸篓: \(error.localizedDescription)")
             return true
         }
+        showToast("图片已移到废纸篓")
         for rawURL in companionRAWs {
             do {
                 try FileManager.default.trashItem(at: rawURL, resultingItemURL: nil)
