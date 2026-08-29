@@ -236,6 +236,16 @@ struct ContentView: View {
             let h = rep?.pixelsHigh ?? Int(image.size.height)
             lines.append(InfoItem(label: "图片尺寸", value: "\(w) × \(h)"))
         }
+        if let url = currentURL,
+           let fileSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+            let value: String
+            if fileSize >= 1_000_000 {
+                value = String(format: "%.1f MB", Double(fileSize) / 1_000_000)
+            } else {
+                value = String(format: "%.1f KB", Double(fileSize) / 1_000)
+            }
+            lines.append(InfoItem(label: "图片大小", value: value))
+        }
         lines.append(contentsOf: exifLines)
         return lines
     }
@@ -404,6 +414,7 @@ struct ContentView: View {
         }
         // 定焦镜头（最短=最长）不显示变焦范围
         let focal = nums[0] == nums[1] ? "\(Int(nums[0]))mm" : "\(Int(nums[0]))-\(Int(nums[1]))mm"
+        guard nums[2] > 0, nums[3] > 0 else { return focal }
         let aMin = String(format: "%.1f", nums[2])
         let aMax = String(format: "%.1f", nums[3])
         let aperture = nums[2] == nums[3] ? "f/\(aMin)" : "f/\(aMin)-\(aMax)"
