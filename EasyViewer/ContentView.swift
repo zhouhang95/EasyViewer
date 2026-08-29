@@ -74,6 +74,11 @@ struct ContentView: View {
             }
         )
         .background(
+            CommandCopyHandler {
+                copyCurrentImageToPasteboard()
+            }
+        )
+        .background(
             InfoPanelMouseHandler {
                 showInfoPanel.toggle()
             }
@@ -963,6 +968,15 @@ struct ContentView: View {
         isFocused = true
     }
 
+    /// 将源文件放入剪贴板，让 Finder 粘贴时创建图片文件，而非仅粘贴位图数据。
+    @discardableResult
+    private func copyCurrentImageToPasteboard() -> Bool {
+        guard let currentURL else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.writeObjects([currentURL as NSURL])
+    }
+
     // 枚举同一文件夹下的所有图片，按文件名排序
     private func loadFolder(for url: URL) {
         let dir = url.deletingLastPathComponent()
@@ -1607,6 +1621,40 @@ struct CommandDeleteHandler: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.handler = onCommandDelete
+    }
+}
+
+/// 直接监听 AppKit 键盘事件，确保 ⌘C 会将当前图片文件交给 Finder。
+struct CommandCopyHandler: NSViewRepresentable {
+    var onCommandCopy: () -> Bool
+
+    final class Coordinator {
+        var handler: () -> Bool = { false }
+        var monitor: Any?
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let coordinator = context.coordinator
+        coordinator.handler = onCommandCopy
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak coordinator] event in
+            guard event.keyCode == 8, // C
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+                  coordinator?.handler() == true else {
+                return event
+            }
+            return nil
+        }
+        return NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.handler = onCommandCopy
     }
 }
 
