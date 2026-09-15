@@ -103,7 +103,7 @@ struct ContentView: View {
         )
         .background(
             MouseWheelNavigationHandler { delta in
-                navigate(delta: delta > 0 ? -1 : 1)
+                navigate(delta: delta > 0 ? 1 : -1)
             }
         )
         .focusable()
@@ -337,7 +337,7 @@ struct ContentView: View {
         // 光圈值
         if let v = exif?["FNumber"] as? Double {
             if v > 0.0 {
-                lines.append(InfoItem(label: "光圈值", value: String(format: "f/%.1f", v)))
+                lines.append(InfoItem(label: "光圈值", value: String(format: "%.1f", v)))
             }
 
         }
@@ -369,7 +369,7 @@ struct ContentView: View {
            focalLength > 0, equivalentFocalLength > 0,
            abs(equivalentFocalLength - focalLength) >= 1 {
             lines.append(InfoItem(
-                label: "35mm等效焦距",
+                label: "等效焦距",
                 value: "\(trimNumber(equivalentFocalLength)) mm"
             ))
         }
@@ -440,7 +440,7 @@ struct ContentView: View {
         guard nums[2] > 0, nums[3] > 0 else { return focal }
         let aMin = String(format: "%.1f", nums[2])
         let aMax = String(format: "%.1f", nums[3])
-        let aperture = nums[2] == nums[3] ? "f/\(aMin)" : "f/\(aMin)-\(aMax)"
+        let aperture = nums[2] == nums[3] ? "F\(aMin)" : "F\(aMin)-\(aMax)"
         return "\(focal) \(aperture)"
     }
 
@@ -492,7 +492,7 @@ struct ContentView: View {
         )
     }
 
-    /// 读取 Sony MakerNote Tag202a 中的已使用对焦点，返回图片内的归一化坐标。
+    /// 读取 Sony MakerNote 中的已使用对焦点，返回图片内的归一化坐标。
     private func sonyFocusPoints(from url: URL) -> [CGPoint]? {
         guard let imageData = try? Data(contentsOf: url),
               let exifRange = imageData.range(of: Data([0x45, 0x78, 0x69, 0x66, 0x00, 0x00])) else {
@@ -500,6 +500,15 @@ struct ContentView: View {
         }
         let orientation = imageOrientation(from: url)
         let tiffStart = exifRange.upperBound
+
+        // FocusLocation（Tag2027）是基于整张照片像素尺寸的坐标。部分较新的机型会在
+        // Tag202A 中写入与其焦平面区域尺寸不一致的 Y 坐标；优先使用前者可准确对应
+        // 相机回放时显示的对焦位置。
+        if let points = sonyFocusLocation(in: imageData, tiffStart: tiffStart) {
+            return orientFocusPoints(points, orientation: orientation)
+        }
+
+        // 没有 FocusLocation 时，回退到 Tag202A 的焦平面对焦区域坐标。
         let marker = Data([0x2a, 0x20, 0x07, 0x00]) // Sony Tag202a, UNDEFINED
         var searchStart = tiffStart
         while let entryRange = imageData.range(of: marker, options: [], in: searchStart..<imageData.endIndex) {
@@ -529,8 +538,7 @@ struct ContentView: View {
             if !points.isEmpty { return orientFocusPoints(points, orientation: orientation) }
             break // 跟踪/眼部 AF 不会写入静态点列表，改用 FocusLocation。
         }
-        return sonyFocusLocation(in: imageData, tiffStart: tiffStart)
-            .map { orientFocusPoints($0, orientation: orientation) }
+        return nil
     }
 
     /// 读取目前支持的相机对焦点，坐标已转换为图片显示方向。
