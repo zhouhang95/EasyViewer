@@ -12,6 +12,11 @@ import ImageIO
 import Accelerate
 
 struct ContentView: View {
+    private static let moveToTrashSound = NSSound(
+        contentsOfFile: "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/dock/drag to trash.aif",
+        byReference: true
+    )
+
     @State private var droppedImage: NSImage?
     @State private var isTargeted = false
     @State private var currentURL: URL?
@@ -1075,6 +1080,7 @@ struct ContentView: View {
             print("[EasyViewer] 无法移到废纸篓: \(error.localizedDescription)")
             return true
         }
+        Self.moveToTrashSound?.play()
         showToast("图片已移到废纸篓")
         for rawURL in companionRAWs {
             do {
