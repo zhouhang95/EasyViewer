@@ -217,7 +217,8 @@ struct ContentView: View {
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
               let gps = properties["{GPS}"] as? [String: Any],
               var latitude = numberValue(gps["Latitude"]),
-              var longitude = numberValue(gps["Longitude"]) else {
+              var longitude = numberValue(gps["Longitude"]),
+              latitude != 0, longitude != 0 else {
             return nil
         }
 
@@ -329,10 +330,18 @@ struct ContentView: View {
         if let v = (props["LensSpecification"] as? [Any]) ?? (exif?["LensSpecification"] as? [Any]), !v.isEmpty {
             lines.append(InfoItem(label: "镜头规格", value: formatLensSpec(v)))
         }
-        // 创建时间
-        if let v = props["DateTime"] as? String { lines.append(InfoItem(label: "创建时间", value: v)) }
-        // 拍摄时间
-        if let v = exif?["DateTimeOriginal"] as? String { lines.append(InfoItem(label: "拍摄时间", value: v)) }
+        // 创建时间使用 EXIF CreateDate（DateTimeDigitized）；ModifyDate 对应 TIFF DateTime。
+        let createDate = (exif?["DateTimeDigitized"] as? String)
+            ?? (exif?["DateTimeOriginal"] as? String)
+            ?? (props["DateTime"] as? String)
+        let modifyDate = tiff?["DateTime"] as? String
+        if let modifyDate, modifyDate != createDate {
+            lines.append(InfoItem(label: "修改时间", value: modifyDate))
+        } else if let createDate {
+            lines.append(InfoItem(label: "创建时间", value: createDate))
+        } else if let modifyDate {
+            lines.append(InfoItem(label: "修改时间", value: modifyDate))
+        }
         // 曝光时间
         if let v = exif?["ExposureTime"] as? Double {
             if v > 0.0 {
@@ -421,15 +430,14 @@ struct ContentView: View {
                 lines.append(InfoItem(label: "照片风格", value: panasonicPhotoStyleName(photoStyle)))
             }
         }
-        // 纬度
-        if let v = gps?["Latitude"] as? Double {
-            let ref = gps?["LatitudeRef"] as? String ?? ""
-            lines.append(InfoItem(label: "纬度", value: "\(v)\(ref)"))
-        }
-        // 经度
-        if let v = gps?["Longitude"] as? Double {
-            let ref = gps?["LongitudeRef"] as? String ?? ""
-            lines.append(InfoItem(label: "经度", value: "\(v)\(ref)"))
+        // 任一坐标为 0 时视为无效 GPS，不显示经纬度。
+        if let latitude = numberValue(gps?["Latitude"]),
+           let longitude = numberValue(gps?["Longitude"]),
+           latitude != 0, longitude != 0 {
+            let latitudeRef = gps?["LatitudeRef"] as? String ?? ""
+            let longitudeRef = gps?["LongitudeRef"] as? String ?? ""
+            lines.append(InfoItem(label: "纬度", value: "\(latitude)\(latitudeRef)"))
+            lines.append(InfoItem(label: "经度", value: "\(longitude)\(longitudeRef)"))
         }
         return lines
     }
@@ -986,9 +994,34 @@ struct ContentView: View {
         return values.fileResourceIdentifier as? NSObject
     }
 
+    /// HEIF 容器可能包含缩略图和辅助图，读取主图并应用方向信息。
+    private func decodedImage(from url: URL) -> NSImage? {
+        let heifExtensions: Set<String> = ["heic", "heif", "hif"]
+        if heifExtensions.contains(url.pathExtension.lowercased()),
+           let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
+            let index = CGImageSourceGetPrimaryImageIndex(source)
+            if let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [String: Any],
+               let width = properties[kCGImagePropertyPixelWidth as String] as? NSNumber,
+               let height = properties[kCGImagePropertyPixelHeight as String] as? NSNumber {
+                let options: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: max(width.intValue, height.intValue)
+                ]
+                if let image = CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary) {
+                    let bitmap = NSBitmapImageRep(cgImage: image)
+                    let result = NSImage(size: NSSize(width: image.width, height: image.height))
+                    result.addRepresentation(bitmap)
+                    return result
+                }
+            }
+        }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return NSImage(data: data)
+    }
+
     private func loadImage(from url: URL) {
-        guard let data = try? Data(contentsOf: url),
-              let image = NSImage(data: data) else {
+        guard let image = decodedImage(from: url) else {
             print("[EasyViewer] 无法加载图片: \(url.path)")
             return
         }
@@ -1059,8 +1092,7 @@ struct ContentView: View {
         let count = folderImages.count
         let next = ((idx + delta) % count + count) % count
         let url = folderImages[next]
-        guard let data = try? Data(contentsOf: url),
-              let image = NSImage(data: data) else { return }
+        guard let image = decodedImage(from: url) else { return }
         currentURL = url
         droppedImage = image
         if actualSize {
@@ -1101,8 +1133,7 @@ struct ContentView: View {
         // 删除后优先显示原位置的下一张；删除最后一张时显示前一张。
         let nextIndex = min(index, folderImages.count - 1)
         let nextURL = folderImages[nextIndex]
-        guard let data = try? Data(contentsOf: nextURL),
-              let image = NSImage(data: data) else {
+        guard let image = decodedImage(from: nextURL) else {
             currentURL = nextURL
             droppedImage = nil
             return true
@@ -1609,6 +1640,7 @@ struct FileDropZone: NSViewRepresentable {
             let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
             guard let urls = board.readObjects(forClasses: [NSURL.self], options: options) as? [URL] else { return nil }
             return urls.first { url in
+                if ["heic", "heif", "hif"].contains(url.pathExtension.lowercased()) { return true }
                 guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
                 return type.conforms(to: .image)
             }

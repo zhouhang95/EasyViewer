@@ -12,6 +12,8 @@
             <key>LSItemContentTypes</key>
             <array>
                 <string>public.image</string>
+                <string>public.heic</string>
+                <string>public.heif</string>
             </array>
             <key>LSHandlerRank</key>
             <string>Alternate</string>
