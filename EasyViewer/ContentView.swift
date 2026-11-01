@@ -97,9 +97,10 @@ struct ContentView: View {
             }
         )
         .background(
-            CommandCopyHandler {
-                copyCurrentImageToPasteboard()
-            }
+            CommandCopyHandler(
+                onCommandCopy: { copyCurrentImageToPasteboard() },
+                onOptionCommandCopy: { copyCurrentImagePathToPasteboard() }
+            )
         )
         .background(
             InfoPanelMouseHandler {
@@ -1045,6 +1046,19 @@ struct ContentView: View {
         return didCopy
     }
 
+    /// 将当前图片的 POSIX 文件路径作为纯文本复制到剪贴板。
+    @discardableResult
+    private func copyCurrentImagePathToPasteboard() -> Bool {
+        guard let currentURL else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let didCopy = pasteboard.setString(currentURL.path, forType: .string)
+        if didCopy {
+            showToast("图片路径已复制")
+        }
+        return didCopy
+    }
+
     private func showToast(_ message: String) {
         toastDismissTask?.cancel()
         toastMessage = message
@@ -1703,12 +1717,14 @@ struct CommandDeleteHandler: NSViewRepresentable {
     }
 }
 
-/// 直接监听 AppKit 键盘事件，确保 ⌘C 会将当前图片文件交给 Finder。
+/// 直接监听 AppKit 键盘事件，确保 ⌘C 复制图片文件、⌥⌘C 复制图片路径。
 struct CommandCopyHandler: NSViewRepresentable {
     var onCommandCopy: () -> Bool
+    var onOptionCommandCopy: () -> Bool
 
     final class Coordinator {
         var handler: () -> Bool = { false }
+        var optionHandler: () -> Bool = { false }
         var monitor: Any?
 
         deinit {
@@ -1721,12 +1737,16 @@ struct CommandCopyHandler: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let coordinator = context.coordinator
         coordinator.handler = onCommandCopy
+        coordinator.optionHandler = onOptionCommandCopy
         coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak coordinator] event in
             guard event.keyCode == 8, // C
-                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
-                  coordinator?.handler() == true else {
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) else {
                 return event
             }
+            let handler = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.option)
+                ? coordinator?.optionHandler
+                : coordinator?.handler
+            guard handler?() == true else { return event }
             return nil
         }
         return NSView()
@@ -1734,6 +1754,7 @@ struct CommandCopyHandler: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.handler = onCommandCopy
+        context.coordinator.optionHandler = onOptionCommandCopy
     }
 }
 
