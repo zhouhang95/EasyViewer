@@ -336,11 +336,10 @@ struct ContentView: View {
             ?? (exif?["DateTimeOriginal"] as? String)
             ?? (props["DateTime"] as? String)
         let modifyDate = tiff?["DateTime"] as? String
-        if let modifyDate, modifyDate != createDate {
-            lines.append(InfoItem(label: "修改时间", value: modifyDate))
-        } else if let createDate {
+        if let createDate {
             lines.append(InfoItem(label: "创建时间", value: createDate))
-        } else if let modifyDate {
+        }
+        if let modifyDate, modifyDate != createDate {
             lines.append(InfoItem(label: "修改时间", value: modifyDate))
         }
         // 曝光时间
