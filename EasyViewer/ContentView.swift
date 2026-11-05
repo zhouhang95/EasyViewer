@@ -969,7 +969,7 @@ struct ContentView: View {
             Image(systemName: "photo.badge.plus")
                 .font(.system(size: 56))
                 .foregroundStyle(.secondary)
-            Text("将图片拖到此处")
+            Text(currentURL == nil ? "将图片拖到此处" : "无法打开")
                 .font(.title2)
                 .foregroundStyle(.secondary)
         }
@@ -1017,14 +1017,13 @@ struct ContentView: View {
             }
         }
         guard let data = try? Data(contentsOf: url) else { return nil }
-        return NSImage(data: data)
+        guard let image = NSImage(data: data),
+              image.cgImage(forProposedRect: nil, context: nil, hints: nil) != nil else { return nil }
+        return image
     }
 
     private func loadImage(from url: URL) {
-        guard let image = decodedImage(from: url) else {
-            print("[EasyViewer] 无法加载图片: \(url.path)")
-            return
-        }
+        let image = decodedImage(from: url)
         droppedImage = image
         currentURL = url
         refreshFocusPoints()
@@ -1075,7 +1074,10 @@ struct ContentView: View {
         let urls = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
         let supportedExtensions: Set<String> = ["jpg", "jpeg", "png", "webp", "heic", "heif", "hif"]
         folderImages = urls.filter { fileURL in
-            supportedExtensions.contains(fileURL.pathExtension.lowercased())
+            guard supportedExtensions.contains(fileURL.pathExtension.lowercased()),
+                  let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true else { return false }
+            return true
         }.sorted {
                 $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
             }
@@ -1105,7 +1107,7 @@ struct ContentView: View {
         let count = folderImages.count
         let next = ((idx + delta) % count + count) % count
         let url = folderImages[next]
-        guard let image = decodedImage(from: url) else { return }
+        let image = decodedImage(from: url)
         currentURL = url
         droppedImage = image
         if actualSize {
